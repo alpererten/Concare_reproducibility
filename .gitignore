@@ -1,3 +1,8 @@
+# Folders with large data
+mimic3-benchmarks/data_input/
+mimic3-benchmarks/data/root/
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
