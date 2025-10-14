@@ -1,6 +1,13 @@
-# Folders with large data
+# Ignore only large data folders inside mimic3-benchmarks
 mimic3-benchmarks/data_input/
 mimic3-benchmarks/data/root/
+
+# Keep everything else under mimic3-benchmarks tracked
+!mimic3-benchmarks/
+!mimic3-benchmarks/**/
+!mimic3-benchmarks/**/*.py
+!mimic3-benchmarks/**/*.ipynb
+!mimic3-benchmarks/**/*.md
 
 
 # Byte-compiled / optimized / DLL files
