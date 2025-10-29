@@ -5,10 +5,12 @@ import math
 import pickle
 from typing import Tuple, Optional, List, Dict
 
+
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
+
 
 class Normalizer:
     def __init__(self, state_path: Optional[str] = "data/ihm_normalizer"):
@@ -25,8 +27,17 @@ class Normalizer:
             self.stds  = np.asarray(state["stds"]).astype(np.float32)
 
     def fit(self, X):
-        self.means = np.nanmean(X, axis=(0, 1))
-        self.stds = np.nanstd(X, axis=(0, 1)) + 1e-8
+        means = np.nanmean(X, axis=(0, 1))
+        stds  = np.nanstd(X, axis=(0, 1))
+
+        # Replace NaN means/stds for features that are entirely missing ("dead features")
+        dead = np.isnan(means) | np.isnan(stds)
+        if np.any(dead):
+            means[dead] = 0.0
+            stds[dead]  = 1.0
+
+        self.means = means.astype(np.float32)
+        self.stds  = (stds + 1e-8).astype(np.float32)
 
     def transform(self, X):
         if self.means is None or self.stds is None:
@@ -58,8 +69,15 @@ def discretize_timeseries(df, timestep: float = 1.0):
             else:
                 col[t] = last
         if np.isnan(col).any():
-            m = np.nanmean(col)
-            col[np.isnan(col)] = 0 if np.isnan(m) else m
+            if np.all(np.isnan(col)):
+                # whole column is missing for this episode → fill with 0 without calling nanmean
+                col[:] = 0.0
+            else:
+                m = np.nanmean(col)  # safe now, at least one non-nan exists
+                if np.isnan(m):
+                    col[np.isnan(col)] = 0.0
+                else:
+                    col[np.isnan(col)] = m
         out[:, j] = col
     return out.astype(np.float32), cols
 
@@ -126,7 +144,7 @@ class ConcareEpisodeDataset(Dataset):
 def pad_collate(batch):
     Xs, Ds, ys = zip(*batch)
     B, T, N = len(Xs), max(x.shape[0] for x in Xs), Xs[0].shape[1]
-    Xp = torch.zeros(B, T, N)
+    Xp = torch.zeros(B, T, N, dtype=torch.float32)
     for i, x in enumerate(Xs):
         Xp[i, : x.shape[0], :] = x
     return Xp, torch.stack(Ds), torch.stack(ys)
