@@ -194,13 +194,17 @@ def discretize_timeseries_fixed(
     return X, feature_cols
 
 
+
+
+
 class ConcareEpisodeDataset(Dataset):
     """
     Dataset that:
       1) loads per-stay timeseries and demographics
       2) discretizes + expands with masks
       3) normalizes with the loaded normalizer, enforcing exact width
-      4) standardizes 12-d demographics with a saved scaler (new)
+      4) standardizes 12-d demographics with a saved scaler
+      5) (NEW) caches per-sample tensors to disk for fast subsequent epochs
     """
 
     def __init__(
@@ -209,12 +213,14 @@ class ConcareEpisodeDataset(Dataset):
         timestep: float = 0.8,
         normalizer: Optional[Normalizer] = None,
         expected_features: int = 76,
-        value_feature_count: Optional[int] = 17
+        value_feature_count: Optional[int] = 17,
+        cache_tensors: bool = False,                  # NEW
+        cache_dir: str = "cache",                     # NEW
     ):
         self.split = split
         self.timestep = float(timestep)
         self.normalizer = normalizer
-        # If a normalizer is provided and loaded, trust its width as single source of truth
+        # Trust normalizer width if available
         self.expected_features = int(normalizer.feature_count) if (normalizer and normalizer.feature_count) else int(expected_features)
         self.value_feature_count = value_feature_count
 
@@ -222,29 +228,35 @@ class ConcareEpisodeDataset(Dataset):
         self.zero_demo = os.getenv("CONCARE_ZERO_DEMO", "0") == "1"
         self.demo_debug = os.getenv("CONCARE_DEMO_DEBUG", "0") == "1"
 
+        # NEW: tensor cache setup (separate per split/feature width/timestep)
+        self.cache_tensors = bool(cache_tensors)
+        self.cache_dir = os.path.join(cache_dir, f"{split}_F{self.expected_features}_ts{str(self.timestep).replace('.','p')}")
+        if self.cache_tensors:
+            os.makedirs(self.cache_dir, exist_ok=True)
+
+        # Data roots
         self.ts_dir = f"data/{split}"
         self.demo_dir = "data/demographic"
         self.listfile = f"data/{split}_listfile.csv"
 
-        # Load listfile
+        # Listfile
         self.df = pd.read_csv(self.listfile)
 
-        # Inspect first file for column sanity
+        # Inspect first file for columns
         first_ts = pd.read_csv(os.path.join(self.ts_dir, self.df.iloc[0]["stay"]))
         self.feature_names = [c for c in first_ts.columns if c != "Hours"]
         print(
             f"[DEBUG] Dataset {split}: {len(self.df)} samples, "
-            f"{len(self.feature_names)} raw features, "
-            f"expected_features={self.expected_features}, timestep={self.timestep}"
+            f"{len(self.feature_names)} raw features, expected_features={self.expected_features}, "
+            f"timestep={self.timestep}"
         )
 
-        # Demographics scaler: try to load, else fit once on train
+        # Demo scaler: load if exists; fit on a subset of train otherwise
         self.demo_scaler = DemoScaler("artifacts/demo_norm.npz")
         if self.demo_scaler.load():
             print("[DEBUG] Loaded demo scaler from artifacts/demo_norm.npz")
         elif self.split == "train":
             rows = []
-            # collect up to 2000 demographic rows to fit scaler
             cap = min(len(self.df), 2000)
             for i in range(cap):
                 demo_name = self.df.iloc[i]["stay"].replace("_timeseries", "")
@@ -264,9 +276,24 @@ class ConcareEpisodeDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        ts_file = os.path.join(self.ts_dir, row["stay"])
-        demo_name = row["stay"].replace("_timeseries", "")
-        demo_file = os.path.join(self.demo_dir, demo_name)
+        stay_fname = row["stay"]                          # e.g., "12797_episode1_timeseries.csv"
+        stay_name = stay_fname.replace("_timeseries.csv", "")
+        ts_file = os.path.join(self.ts_dir, stay_fname)
+        demo_file = os.path.join(self.demo_dir, stay_name)
+
+        # -------- NEW: fast path via on-disk tensor cache --------
+        if self.cache_tensors:
+            base = stay_name.replace("/", "_")
+            x_path = os.path.join(self.cache_dir, f"{base}_X.pt")
+            d_path = os.path.join(self.cache_dir, f"{base}_D.pt")
+            y_path = os.path.join(self.cache_dir, f"{base}_y.pt")
+            if os.path.exists(x_path) and os.path.exists(d_path) and os.path.exists(y_path):
+                try:
+                    return torch.load(x_path), torch.load(d_path), torch.load(y_path)
+                except Exception:
+                    # cache might be stale/partial; rebuild below
+                    pass
+        # ---------------------------------------------------------
 
         # Load and discretize timeseries to exactly expected_features
         ts_df = pd.read_csv(ts_file)
@@ -281,14 +308,10 @@ class ConcareEpisodeDataset(Dataset):
         if self.normalizer and self.normalizer.feature_count:
             X = self.normalizer.transform(X)
 
-        # Final sanitation before converting to tensors
-        if not np.isfinite(X).all():
-            bad = np.isfinite(X).astype(np.uint8)
-            print(f"[DEBUG] Non-finite X detected in sample idx={idx} "
-                  f"(finite ratio {bad.mean():.4f}). Replacing with zeros.")
-            X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        # Sanitize NaNs/Infs
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
-        # Build demographics vector of fixed length 12 and scale it
+        # Build demographics vector
         if self.zero_demo:
             D = np.zeros((12,), dtype=np.float32)
         else:
@@ -297,18 +320,30 @@ class ConcareEpisodeDataset(Dataset):
                 D = self._extract_demographics(demo_df)  # scaled if scaler is available
             else:
                 D = np.zeros((12,), dtype=np.float32)
-
-        y = float(row["y_true"])
-
-        # Final sanitation
         D = np.nan_to_num(D, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
+        y = np.array([float(row["y_true"])], dtype=np.float32)
+
+        # Convert to tensors
+        X_t = torch.from_numpy(X)
+        D_t = torch.from_numpy(D)
+        y_t = torch.from_numpy(y)
+
+        # -------- NEW: write-through cache for future epochs/runs --------
+        if self.cache_tensors:
+            try:
+                torch.save(X_t, x_path)
+                torch.save(D_t, d_path)
+                torch.save(y_t, y_path)
+            except Exception as e:
+                print(f"[WARN] Could not cache tensors for {stay_name}: {e}")
+        # -----------------------------------------------------------------
+
         if self.demo_debug:
-            # lightweight per-sample stats
             dmin, dmax, dmean = float(np.min(D)), float(np.max(D)), float(np.mean(D))
             print(f"[DEBUG] D stats idx={idx} -> min={dmin:.4f} max={dmax:.4f} mean={dmean:.4f}")
 
-        return torch.from_numpy(X.astype(np.float32)), torch.from_numpy(D.astype(np.float32)), torch.tensor([y], dtype=torch.float32)
+        return X_t, D_t, y_t
 
     # --------- Demographics helpers ---------
 
