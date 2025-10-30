@@ -1,3 +1,4 @@
+
 import os
 import pickle
 import numpy as np
@@ -10,8 +11,7 @@ from typing import Optional, Tuple, List
 class Normalizer:
     """
     Normalizer that loads means and stds for the expanded design.
-    It transforms arrays of shape [T, F] or [B, T, F] with strict width checks
-    and adds numerical safety to avoid NaNs/Infs during training (especially with AMP).
+    It transforms arrays of shape [T, F] or [B, T, F] with strict width checks.
     """
     def __init__(self, state_path: Optional[str] = "data/ihm_normalizer"):
         self.means: Optional[np.ndarray] = None
@@ -25,7 +25,7 @@ class Normalizer:
             except TypeError:
                 state = pickle.loads(data)
             self.means = np.asarray(state["means"]).astype(np.float32)
-            self.stds  = np.asarray(state["stds"]).astype(np.float32)
+            self.stds = np.asarray(state["stds"]).astype(np.float32)
             print(f"[DEBUG] Normalizer loaded with {self.means.shape[0]} features from {state_path}")
 
     @property
@@ -43,12 +43,7 @@ class Normalizer:
                 f"Normalizer width mismatch. X has {F} features but normalizer expects {expF}. "
                 f"Ensure discretization expected_features equals the normalizer length."
             )
-        # Numerical safety: guard stds and clip Z to avoid fp16 overflow under AMP
-        safe_stds = np.where(np.isfinite(self.stds) & (self.stds > 0.0), self.stds, 1.0).astype(np.float32)
-        Z = (X2d - self.means[None, :]) / safe_stds[None, :]
-        # Clip to a moderate range so downstream logits do not explode in fp16
-        Z = np.clip(Z, -20.0, 20.0).astype(np.float32)
-        return Z
+        return (X2d - self.means[None, :]) / self.stds[None, :]
 
     def transform(self, X: np.ndarray) -> np.ndarray:
         """
@@ -64,44 +59,6 @@ class Normalizer:
         return X
 
 
-# ---------------- Demographics scaling (new) ----------------
-
-class DemoScaler:
-    """Simple z-scoring scaler for 12-d demographics, with lazy fit+save."""
-    def __init__(self, path: str = "artifacts/demo_norm.npz"):
-        self.path = path
-        self.means: Optional[np.ndarray] = None
-        self.stds: Optional[np.ndarray]  = None
-
-    def load(self) -> bool:
-        if not os.path.exists(self.path):
-            return False
-        data = np.load(self.path)
-        self.means = data["means"].astype(np.float32)
-        self.stds  = data["stds"].astype(np.float32)
-        return True
-
-    def fit_from_rows(self, rows: List[np.ndarray]) -> None:
-        X = np.stack(rows).astype(np.float32)  # [N, 12]
-        m = np.nanmean(X, axis=0)
-        v = np.nanvar(X, axis=0)
-        s = np.sqrt(np.clip(v, 1e-8, None))
-        self.means, self.stds = m, s
-
-    def save(self) -> None:
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        np.savez(self.path, means=self.means, stds=self.stds)
-
-    def transform(self, d: np.ndarray) -> np.ndarray:
-        if self.means is None or self.stds is None:
-            return d
-        safe = np.where(np.isfinite(self.stds) & (self.stds > 0), self.stds, 1.0).astype(np.float32)
-        z = (d - self.means) / safe
-        return np.nan_to_num(z, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
-
-
-# ---------------- Timeseries discretization (unchanged semantics) ----------------
-
 def discretize_timeseries_fixed(
     df: pd.DataFrame,
     timestep: float,
@@ -110,7 +67,7 @@ def discretize_timeseries_fixed(
 ) -> Tuple[np.ndarray, List[str]]:
     """
     Discretize into bins of size `timestep`, expand with a mask per original channel,
-    then pad with zeros to `expected_features` exactly.
+    then align to `expected_features` exactly.
 
     value_feature_count controls how many leftmost columns are value channels.
     For MIMIC-III IHM the raw set is typically 17. The mask block is the same count.
@@ -189,9 +146,9 @@ def discretize_timeseries_fixed(
         pad = np.zeros((T, expected_features - base_width), dtype=np.float32)
         X = np.concatenate([X, pad], axis=-1)
 
-    # Replace any remaining NaNs and ensure finiteness
-    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
-    return X, feature_cols
+    # Replace any remaining NaNs
+    X = np.nan_to_num(X, nan=0.0)
+    return X.astype(np.float32), feature_cols
 
 
 class ConcareEpisodeDataset(Dataset):
@@ -200,7 +157,6 @@ class ConcareEpisodeDataset(Dataset):
       1) loads per-stay timeseries and demographics
       2) discretizes + expands with masks
       3) normalizes with the loaded normalizer, enforcing exact width
-      4) standardizes 12-d demographics with a saved scaler (new)
     """
 
     def __init__(
@@ -218,10 +174,6 @@ class ConcareEpisodeDataset(Dataset):
         self.expected_features = int(normalizer.feature_count) if (normalizer and normalizer.feature_count) else int(expected_features)
         self.value_feature_count = value_feature_count
 
-        # Env toggles
-        self.zero_demo = os.getenv("CONCARE_ZERO_DEMO", "0") == "1"
-        self.demo_debug = os.getenv("CONCARE_DEMO_DEBUG", "0") == "1"
-
         self.ts_dir = f"data/{split}"
         self.demo_dir = "data/demographic"
         self.listfile = f"data/{split}_listfile.csv"
@@ -237,27 +189,6 @@ class ConcareEpisodeDataset(Dataset):
             f"{len(self.feature_names)} raw features, "
             f"expected_features={self.expected_features}, timestep={self.timestep}"
         )
-
-        # Demographics scaler: try to load, else fit once on train
-        self.demo_scaler = DemoScaler("artifacts/demo_norm.npz")
-        if self.demo_scaler.load():
-            print("[DEBUG] Loaded demo scaler from artifacts/demo_norm.npz")
-        elif self.split == "train":
-            rows = []
-            # collect up to 2000 demographic rows to fit scaler
-            cap = min(len(self.df), 2000)
-            for i in range(cap):
-                demo_name = self.df.iloc[i]["stay"].replace("_timeseries", "")
-                demo_file = os.path.join(self.demo_dir, demo_name)
-                if os.path.exists(demo_file):
-                    demo_df = pd.read_csv(demo_file)
-                    rows.append(self._extract_demographics_raw(demo_df))
-            if rows:
-                self.demo_scaler.fit_from_rows(rows)
-                self.demo_scaler.save()
-                print("[DEBUG] Fitted and saved demo scaler to artifacts/demo_norm.npz")
-            else:
-                print("[WARN] Could not fit demo scaler — no demographic files found")
 
     def __len__(self):
         return len(self.df)
@@ -279,85 +210,38 @@ class ConcareEpisodeDataset(Dataset):
 
         # Apply normalization with strict width equality
         if self.normalizer and self.normalizer.feature_count:
+            # transform supports [T, F] directly
             X = self.normalizer.transform(X)
 
-        # Final sanitation before converting to tensors
-        if not np.isfinite(X).all():
-            bad = np.isfinite(X).astype(np.uint8)
-            print(f"[DEBUG] Non-finite X detected in sample idx={idx} "
-                  f"(finite ratio {bad.mean():.4f}). Replacing with zeros.")
-            X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # Build demographics vector of fixed length 12 and scale it
-        if self.zero_demo:
-            D = np.zeros((12,), dtype=np.float32)
+        # Load demographics vector of length 12
+        if os.path.exists(demo_file):
+            demo_df = pd.read_csv(demo_file)
+            D = self._extract_demographics(demo_df)
         else:
-            if os.path.exists(demo_file):
-                demo_df = pd.read_csv(demo_file)
-                D = self._extract_demographics(demo_df)  # scaled if scaler is available
-            else:
-                D = np.zeros((12,), dtype=np.float32)
+            D = np.zeros((12,), dtype=np.float32)
 
         y = float(row["y_true"])
 
         # Final sanitation
-        D = np.nan_to_num(D, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+        X = np.nan_to_num(X, nan=0.0)
+        D = np.nan_to_num(D, nan=0.0)
 
-        if self.demo_debug:
-            # lightweight per-sample stats
-            dmin, dmax, dmean = float(np.min(D)), float(np.max(D)), float(np.mean(D))
-            print(f"[DEBUG] D stats idx={idx} -> min={dmin:.4f} max={dmax:.4f} mean={dmean:.4f}")
-
-        return torch.from_numpy(X.astype(np.float32)), torch.from_numpy(D.astype(np.float32)), torch.tensor([y], dtype=torch.float32)
-
-    # --------- Demographics helpers ---------
-
-    def _select_demo_columns(self, df: pd.DataFrame) -> List[str]:
-        """
-        Choose up to 12 sensible demographics. Adjust the names to your CSVs.
-        Falls back to first 12 numeric non-ID columns if expected names are missing.
-        """
-        preferred = [
-            "Age", "Gender", "Height", "Weight",
-            "Mean blood pressure", "Systolic blood pressure", "Diastolic blood pressure",
-            "Heart Rate", "Respiratory rate", "Temperature",
-            "Oxygen saturation", "Glascow coma scale total",
-        ]
-        cols = [c for c in preferred if c in df.columns]
-        if len(cols) >= 12:
-            return cols[:12]
-
-        # fallback: numeric non-ID columns
-        num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        # drop likely ID-ish columns
-        drop_keys = ("ID", "Id", "id", "ICUSTAY", "HADM", "SUBJECT")
-        num_cols = [c for c in num_cols if not any(k in c for k in drop_keys)]
-        # keep deterministic order
-        extra = [c for c in num_cols if c not in cols]
-        cols = (cols + extra)[:12]
-        return cols
-
-    def _extract_demographics_raw(self, df: pd.DataFrame, k: int = 12) -> np.ndarray:
-        cols = self._select_demo_columns(df)
-        if len(df) == 0 or not cols:
-            return np.zeros((k,), dtype=np.float32)
-        row = df.iloc[0][cols].to_numpy(dtype=np.float32, copy=False)
-        # clamp extreme magnitudes (kill IDs or totals that slipped in)
-        row = np.nan_to_num(row, nan=0.0, posinf=0.0, neginf=0.0)
-        row[np.abs(row) > 1e6] = 0.0
-        # pad/truncate to k
-        if row.shape[0] >= k:
-            return row[:k].astype(np.float32)
-        out = np.zeros((k,), dtype=np.float32)
-        out[: row.shape[0]] = row
-        return out
+        return torch.from_numpy(X), torch.from_numpy(D), torch.tensor([y], dtype=torch.float32)
 
     def _extract_demographics(self, df: pd.DataFrame, k: int = 12) -> np.ndarray:
-        row = self._extract_demographics_raw(df, k=k)
-        # scale if scaler is ready
-        if self.demo_scaler is not None and self.demo_scaler.means is not None:
-            row = self.demo_scaler.transform(row)
-        return row
+        num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        if "Mortality" in num_cols:
+            num_cols.remove("Mortality")
+        if len(df) > 0 and len(num_cols) > 0:
+            row = df[num_cols].iloc[0].to_numpy(dtype=np.float32, copy=False)
+        else:
+            row = np.array([], dtype=np.float32)
+        if row.shape[0] >= k:
+            return row[:k]
+        out = np.zeros((k,), dtype=np.float32)
+        if row.shape[0] > 0:
+            out[: row.shape[0]] = row
+        return out
 
 
 def pad_collate(batch):
