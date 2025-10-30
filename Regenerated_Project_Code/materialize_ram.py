@@ -1,6 +1,21 @@
 import os, sys, csv, math
 import numpy as np
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Optional
+
+
+# Always clean existing cache before re-materializing
+CACHE_DIR = os.path.join("data", "normalized_data_cache")
+if os.path.exists(CACHE_DIR):
+    for f in os.listdir(CACHE_DIR):
+        if f.endswith(".npz"):
+            try:
+                os.remove(os.path.join(CACHE_DIR, f))
+            except Exception as e:
+                print(f"[WARN] Could not remove {f}: {e}")
+    print(f"[INFO] Cleared old cache files in {CACHE_DIR}")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+
 
 
 # ---------- Lightweight reader (no pandas) ----------
@@ -90,27 +105,33 @@ class DiscretizerNP:
         return X.astype(np.float32)
 
 
-# ---------- Normalizer ----------
+# ---------- Normalizer: values only, never masks ----------
 class NormalizerNP:
+    """
+    Standardize only VALUE columns. Mask columns remain 0 or 1.
+    Stores n_value_feats so we always skip masks correctly.
+    """
     def __init__(self, stats_path: Optional[str] = None):
         self.stats_path = stats_path
         self.means = None
         self.stds = None
+        self.n_value_feats: Optional[int] = None
         if stats_path and os.path.exists(stats_path):
             z = np.load(stats_path)
             self.means = z["means"].astype(np.float32)
             self.stds = z["stds"].astype(np.float32)
+            self.n_value_feats = int(z["n_value_feats"])
 
-    def fit(self, matrices: List[np.ndarray]):
-        if not matrices:
-            return
-        F = matrices[0].shape[1]
-        s = np.zeros(F, dtype=np.float64)
-        ss = np.zeros(F, dtype=np.float64)
-        n = np.zeros(F, dtype=np.int64)
+    def fit(self, matrices: List[np.ndarray], n_value_feats: int):
+        self.n_value_feats = int(n_value_feats)
+        Fv = self.n_value_feats
+        s = np.zeros(Fv, dtype=np.float64)
+        ss = np.zeros(Fv, dtype=np.float64)
+        n = np.zeros(Fv, dtype=np.int64)
         for X in matrices:
-            finite = np.isfinite(X)
-            vals = np.where(finite, X, 0.0)
+            Xv = X[:, :Fv]
+            finite = np.isfinite(Xv)
+            vals = np.where(finite, Xv, 0.0)
             s += vals.sum(axis=0)
             ss += (vals * vals).sum(axis=0)
             n += finite.sum(axis=0)
@@ -122,16 +143,21 @@ class NormalizerNP:
         self.stds = stds
 
     def transform(self, X: np.ndarray) -> np.ndarray:
-        if self.means is None or self.stds is None:
+        if self.means is None or self.stds is None or self.n_value_feats is None:
             return X
-        Fm = min(X.shape[1], self.means.shape[0])
-        X[:, :Fm] = (X[:, :Fm] - self.means[:Fm]) / self.stds[:Fm]
+        Fv = min(self.n_value_feats, X.shape[1])
+        X[:, :Fv] = (X[:, :Fv] - self.means[:Fv]) / self.stds[:Fv]
         return X
 
     def save(self):
-        if self.stats_path and self.means is not None and self.stds is not None:
+        if self.stats_path and self.means is not None and self.stds is not None and self.n_value_feats is not None:
             os.makedirs(os.path.dirname(self.stats_path), exist_ok=True)
-            np.savez_compressed(self.stats_path, means=self.means, stds=self.stds)
+            np.savez_compressed(
+                self.stats_path,
+                means=self.means,
+                stds=self.stds,
+                n_value_feats=np.array(self.n_value_feats, dtype=np.int32),
+            )
 
 
 # ---------- Materialization ----------
@@ -156,13 +182,15 @@ def materialize_split(
     need_fit = (split == "train") and (norm.means is None or norm.stds is None)
 
     X_list, y_list = [], []
-    if need_fit:
-        print(f"[INFO] Fitting normalizer on {split}...")
-        tmp = []
+    tmp = []
+
+    n_value_feats: Optional[int] = None
 
     for i, (ts_path, y) in enumerate(reader.iter_samples()):
         feat_names, hours, values = reader.read_timeseries(ts_path)
-        X = discret.transform(hours, values)
+        X = discret.transform(hours, values)  # [T, Fv] or [T, 2Fv] if masks
+        if n_value_feats is None:
+            n_value_feats = X.shape[1] // 2 if discret.append_masks else X.shape[1]
         if need_fit:
             tmp.append(X.copy())
         else:
@@ -173,7 +201,7 @@ def materialize_split(
             print(f"[INFO] {split}: processed {i+1}/{len(reader)}")
 
     if need_fit:
-        norm.fit(tmp)
+        norm.fit(tmp, n_value_feats=n_value_feats)
         norm.save()
         X_list = [norm.transform(x) for x in X_list]
 

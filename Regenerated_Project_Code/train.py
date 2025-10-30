@@ -2,6 +2,7 @@
 ConCare Trainer — RAM-only: materialize once -> train from memory
 Loads normalized NPZs from data/normalized_data_cache/
 """
+
 import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -12,7 +13,21 @@ from torch.utils.data import DataLoader
 from torch import amp
 from datetime import datetime
 from helpers import set_seed
-from metrics import binary_metrics
+
+# ---- Metrics selection ----
+# Our local metrics (threshold-free AUROC/AUPRC and extras)
+from metrics import binary_metrics as ours_binary_metrics
+# Optional MINPSE helper from our metrics, with a safe fallback if absent
+try:
+    from metrics import minpse_report as ours_minpse
+except Exception:
+    ours_minpse = None
+
+# Authors' metrics for papers_metrics_mode, if available
+try:
+    from metrics_authors import binary_metrics as authors_binary_metrics
+except Exception:
+    authors_binary_metrics = None
 
 # ---- Fixed cache locations inside the project ----
 CACHE_DIR = os.path.join("data", "normalized_data_cache")
@@ -25,7 +40,7 @@ def build_argparser():
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight_decay", type=float, default=0.0)
-    p.add_argument("--lambda_decov", type=float, default=1e-3)
+    p.add_argument("--lambda_decov", type=float, default=1e-4)  # safer default
     p.add_argument("--amp", action="store_true")
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--save_dir", type=str, default="trained_models")
@@ -34,8 +49,9 @@ def build_argparser():
     p.add_argument("--append_masks", action="store_true",
                    help="Append binary masks to values in discretizer (2F features).")
     p.add_argument("--diag", action="store_true", help="Run preflight diagnostics before training")
-    # torch.compile is opt-in (Windows often lacks Triton)
     p.add_argument("--compile", action="store_true", help="Enable torch.compile if Triton is available")
+    p.add_argument("--papers_metrics_mode", action="store_true",
+                   help="Use the authors' metric implementation for AUROC and AUPRC")
     return p
 
 
@@ -127,7 +143,45 @@ def diag_preflight(train_ds, device, collate_fn):
     print("[DIAG] ===== End preflight =====\n")
 
 
-def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoch=0):
+def _sanitize_decov(decov_tensor: torch.Tensor):
+    """Replace NaN or Inf and clamp to prevent numerical blow ups."""
+    d = torch.nan_to_num(decov_tensor, nan=0.0, posinf=1e6, neginf=-1e6)
+    return d.clamp_max(1e4)
+
+
+def best_threshold_from_probs(y_true, y_prob):
+    """Grid search thresholds to maximize F1 for the positive class."""
+    y_true = y_true.astype(np.float32)
+    best = (0.5, 0.0, 0.0, 0.0)
+    for t in np.linspace(0.01, 0.99, 99):
+        y_pred = (y_prob >= t).astype(np.int32)
+        tp = np.sum((y_pred == 1) & (y_true == 1))
+        fp = np.sum((y_pred == 1) & (y_true == 0))
+        fn = np.sum((y_pred == 0) & (y_true == 1))
+        prec = tp / max(tp + fp, 1)
+        rec  = tp / max(tp + fn, 1)
+        f1 = 0.0 if (prec + rec) == 0.0 else 2 * prec * rec / (prec + rec)
+        if f1 > best[1]:
+            best = (float(t), float(f1), float(prec), float(rec))
+    return best
+
+
+def minpse_from_pr(precision: float, recall: float) -> float:
+    """Compute MINPSE at a specific operating point if we only know P and R."""
+    return 1.0 - 0.5 * (precision + recall)
+
+
+# Choose which metric function to use
+def select_metric_fn(papers_mode: bool):
+    if papers_mode:
+        if authors_binary_metrics is None:
+            print("[WARN] papers_metrics_mode is requested but metrics_authors.py is not available. Falling back to local metrics")
+            return ours_binary_metrics, "local"
+        return authors_binary_metrics, "authors"
+    return ours_binary_metrics, "local"
+
+
+def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoch, criterion, metric_fn):
     model.train()
     total_loss = 0.0
     probs, labels = [], []
@@ -135,53 +189,95 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
         X, D, y = X.to(device, non_blocking=True), D.to(device, non_blocking=True), y.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
         if scaler:
-            with amp.autocast("cuda", dtype=torch.float16):
+            # bfloat16 is usually more stable than fp16 on Ada GPUs
+            with amp.autocast("cuda", dtype=torch.bfloat16):
                 logits, decov = model(X, D)
-                bce = torch.nn.functional.binary_cross_entropy_with_logits(logits, y)
+                decov = _sanitize_decov(decov)
+                bce = criterion(logits, y)
                 loss = bce + lambda_decov * decov
+            if not torch.isfinite(loss):
+                for g in optimizer.param_groups:
+                    g['lr'] = max(g['lr'] * 0.5, 1e-6)
+                if batch_idx % 50 == 0:
+                    print(f"[WARN] Non-finite loss at epoch {epoch} batch {batch_idx}; "
+                          f"decov={float(decov):.6f} bce={float(bce):.6f}; "
+                          f"lowering LR to {optimizer.param_groups[0]['lr']:.2e} and skipping batch")
+                scaler.update()
+                continue
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer); scaler.update()
         else:
             logits, decov = model(X, D)
-            bce = torch.nn.functional.binary_cross_entropy_with_logits(logits, y)
+            decov = _sanitize_decov(decov)
+            bce = criterion(logits, y)
             loss = bce + lambda_decov * decov
+            if not torch.isfinite(loss):
+                for g in optimizer.param_groups:
+                    g['lr'] = max(g['lr'] * 0.5, 1e-6)
+                if batch_idx % 50 == 0:
+                    print(f"[WARN] Non-finite loss at epoch {epoch} batch {batch_idx}; "
+                          f"decov={float(decov):.6f} bce={float(bce):.6f}; "
+                          f"lowering LR to {optimizer.param_groups[0]['lr']:.2e} and skipping batch")
+                continue
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
+
         total_loss += loss.item() * X.size(0)
-        probs.append(torch.sigmoid(logits).detach().cpu().numpy())
-        labels.append(y.detach().cpu().numpy())
+        # always gather probabilities in float32 for metric stability
+        probs.append(torch.sigmoid(logits).detach().to(torch.float32).cpu().numpy())
+        labels.append(y.detach().to(torch.float32).cpu().numpy())
         if batch_idx == 0:
             print(f"[DIAG] Epoch {epoch} batch {batch_idx} decov={float(decov):.6f} bce={float(bce):.6f}")
+
     y_true = np.concatenate(labels).ravel()
     y_prob = np.concatenate(probs).ravel()
-    m = binary_metrics(y_true, y_prob); m["loss"] = total_loss / len(loader.dataset)
+    m = metric_fn(y_true, y_prob)
+    m["loss"] = total_loss / len(loader.dataset)
     return m
 
 
 @torch.no_grad()
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, criterion, metric_fn):
     model.eval()
     probs, labels = [], []
     total_loss = 0.0
     for X, D, y in loader:
         X, D, y = X.to(device, non_blocking=True), D.to(device, non_blocking=True), y.to(device, non_blocking=True)
         logits, decov = model(X, D)
-        loss = torch.nn.functional.binary_cross_entropy_with_logits(logits, y)
+        decov = _sanitize_decov(decov)
+        loss = criterion(logits, y)
         total_loss += loss.item() * X.size(0)
-        probs.append(torch.sigmoid(logits).cpu().numpy())
-        labels.append(y.cpu().numpy())
+        probs.append(torch.sigmoid(logits).to(torch.float32).cpu().numpy())
+        labels.append(y.to(torch.float32).cpu().numpy())
     y_true = np.concatenate(labels).ravel()
     y_prob = np.concatenate(probs).ravel()
-    m = binary_metrics(y_true, y_prob); m["loss"] = total_loss / len(loader.dataset)
+    m = metric_fn(y_true, y_prob)
+    m["loss"] = total_loss / len(loader.dataset)
     return m, y_true, y_prob
+
+
+def print_thresholded_report(yt_true, yt_prob, thr, header="📊 Test"):
+    yhat = (yt_prob >= thr).astype(np.int32)
+    tp = int(((yhat == 1) & (yt_true == 1)).sum())
+    fp = int(((yhat == 1) & (yt_true == 0)).sum())
+    tn = int(((yhat == 0) & (yt_true == 0)).sum())
+    fn = int(((yhat == 0) & (yt_true == 1)).sum())
+    prec = tp / max(tp + fp, 1)
+    rec  = tp / max(tp + fn, 1)
+    f1   = 0.0 if (prec + rec) == 0.0 else 2 * prec * rec / (prec + rec)
+    acc  = (tp + tn) / max(tp + tn + fp + fn, 1)
+    print(f"\n{header} @thr={thr:.2f}  acc={acc:.4f}  P={prec:.4f}  R={rec:.4f}  F1={f1:.4f}")
+    return acc, prec, rec, f1
 
 
 def main():
     args = build_argparser().parse_args()
     set_seed(42)
+
+    metric_fn, metric_source = select_metric_fn(args.papers_metrics_mode)
 
     if torch.cuda.is_available() and "cuda" in args.device:
         print(f"✅ Using CUDA on device: {torch.cuda.get_device_name(0)}")
@@ -214,6 +310,22 @@ def main():
         diag_preflight(train_ds, args.device, ram_pad_collate)
 
     model = make_model(input_dim, args.device, use_compile=args.compile)
+
+    # ---- Class-weighted BCE (improves recall) ----
+    tmp_loader = DataLoader(train_ds, batch_size=1024, shuffle=False, collate_fn=ram_pad_collate,
+                            num_workers=0, pin_memory=True)
+    train_labels = []
+    for _, _, y in tmp_loader:
+        train_labels.append(y.cpu().numpy())
+    train_labels = np.concatenate(train_labels).ravel()
+    n_pos = float((train_labels > 0.5).sum())
+    n_neg = float((train_labels <= 0.5).sum())
+    pos_weight_value = n_neg / max(n_pos, 1.0)
+    print(f"[INFO] Class counts (train): pos={int(n_pos)} neg={int(n_neg)} pos_weight={pos_weight_value:.2f}")
+    criterion = torch.nn.BCEWithLogitsLoss(
+        pos_weight=torch.tensor([pos_weight_value], device=args.device, dtype=torch.float32)
+    )
+
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr * 0.5, weight_decay=args.weight_decay)
     scaler = amp.GradScaler("cuda") if args.amp and "cuda" in args.device else None
 
@@ -221,24 +333,79 @@ def main():
     best_path = os.path.join(args.save_dir, "best_concare.pt")
     best_auprc = -1.0
 
+    # decov warmup
+    target_lambda = args.lambda_decov
+    warmup_epochs = 10
+
     print(f"\n🚀 Starting training at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"   Input dimension: {input_dim}")
     print(f"   Batch size: {args.batch_size}")
     print(f"   Learning rate: {args.lr * 0.5}")
     print(f"   Using AMP: {args.amp}")
-    print(f"   Using torch.compile: {args.compile}\n")
+    print(f"   Using torch.compile: {args.compile}")
+    print(f"   Metrics source: {metric_source}{' (papers_metrics_mode ON)' if args.papers_metrics_mode else ''}\n")
 
     for epoch in range(1, args.epochs + 1):
-        tr = train_one_epoch(model, train_loader, optimizer, scaler, args.device, args.lambda_decov, epoch)
-        va, _, _ = evaluate(model, val_loader, args.device)
+        lambda_decov = target_lambda * (epoch / warmup_epochs) if epoch <= warmup_epochs else target_lambda
+
+        tr = train_one_epoch(model, train_loader, optimizer, scaler, args.device, lambda_decov, epoch, criterion, metric_fn)
+        va, yv_true, yv_prob = evaluate(model, val_loader, args.device, criterion, metric_fn)
+
         print(f"Epoch {epoch:03d} | Train loss {tr['loss']:.4f} AUPRC {tr['auprc']:.4f} AUROC {tr['auroc']:.4f} | "
               f"Val loss {va['loss']:.4f} AUPRC {va['auprc']:.4f} AUROC {va['auroc']:.4f}")
 
+        # choose threshold that maximizes F1 on current val
+        thr, f1, p, r = best_threshold_from_probs(yv_true, yv_prob)
+        print(f"          Val@thr={thr:.2f}  F1={f1:.4f}  P={p:.4f}  R={r:.4f}")
+
+        # track best by AUPRC
+        if va["auprc"] > best_auprc:
+            best_auprc = va["auprc"]
+            torch.save({"model": model.state_dict(), "epoch": epoch}, best_path)
+
     print(f"\n📊 Evaluating best checkpoint on TEST set")
-    test_metrics, _, _ = evaluate(model, test_loader, args.device)
-    print("\n📊 Test Set Results")
-    for k, v in test_metrics.items():
-        print(f"{k:>8}: {v:.4f}")
+    ckpt = torch.load(best_path, map_location=args.device) if os.path.exists(best_path) else None
+    if ckpt:
+        model.load_state_dict(ckpt["model"])
+
+    test_metrics, yt_true, yt_prob = evaluate(model, test_loader, args.device, criterion, metric_fn)
+
+    # Augment with MINPSE (threshold-free summary around the best P~R point if available)
+    if ours_minpse is not None:
+        try:
+            mp = ours_minpse(yt_true, yt_prob)
+            test_metrics = dict(test_metrics)  # copy to avoid side effects
+            test_metrics.update({
+                "minpse": mp.get("minpse", float("nan")),
+                "minpse_thr": mp.get("best_thr", float("nan")),
+                "minpse_prec": mp.get("precision", float("nan")),
+                "minpse_rec": mp.get("recall", float("nan")),
+            })
+        except Exception:
+            pass
+
+    print("\n📊 Test Set Results (threshold-free)")
+    # Keep the richer threshold-free dump style you liked
+    for k in sorted(test_metrics.keys()):
+        v = test_metrics[k]
+        try:
+            print(f"{k:>8}: {float(v):.4f}")
+        except Exception:
+            print(f"{k:>8}: {v}")
+
+    # also print a thresholded report using best val threshold on the full val set
+    va_full, yv_true, yv_prob = evaluate(model, val_loader, args.device, criterion, metric_fn)
+    thr, f1, p, r = best_threshold_from_probs(yv_true, yv_prob)
+    print_thresholded_report(yt_true, yt_prob, thr, header="📊 Test")
+
+    # Also report a fixed operating point @thr=0.66, including AUROC, AUPRC, and MINPSE@thr
+    thr_fixed = 0.66
+    _, prec66, rec66, f1_66 = print_thresholded_report(yt_true, yt_prob, thr_fixed, header="📊 Test")
+    minpse_66 = minpse_from_pr(prec66, rec66)
+    print(f"      auroc={test_metrics.get('auroc', float('nan')):.4f} "
+          f"auprc={test_metrics.get('auprc', float('nan')):.4f} "
+          f"minpse={minpse_66:.4f}")
+
     print("\n✅ Training completed successfully")
 
 
