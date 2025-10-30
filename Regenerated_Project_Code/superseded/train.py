@@ -1,7 +1,14 @@
 """
 ConCare Trainer — RAM-only: materialize once -> train from memory
 Loads normalized NPZs from data/normalized_data_cache/
+
+PHASE 3 UPDATES:
+- Batch size: 32 → 256
+- Learning rate: 5e-4 → 1e-3
+- Feed-forward dim: 128 → 256
+- Epochs: 50 → 100 (default)
 """
+
 import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -13,9 +20,13 @@ from torch import amp
 from datetime import datetime
 from helpers import set_seed
 
-# Use our metrics by default
+# ---- Metrics selection ----
 from metrics import binary_metrics as ours_binary_metrics
-# Try to import authors' metrics for papers_metrics_mode
+try:
+    from metrics import minpse_report as ours_minpse
+except Exception:
+    ours_minpse = None
+
 try:
     from metrics_authors import binary_metrics as authors_binary_metrics
 except Exception:
@@ -28,23 +39,21 @@ NORM_STATS = os.path.join(CACHE_DIR, "np_norm_stats.npz")
 
 def build_argparser():
     p = argparse.ArgumentParser("ConCare Trainer (RAM-only)")
-    p.add_argument("--epochs", type=int, default=50)
-    p.add_argument("--batch_size", type=int, default=32)
-    p.add_argument("--lr", type=float, default=1e-3)
+    # PHASE 3: Updated defaults to match authors
+    p.add_argument("--epochs", type=int, default=100)  # Changed from 50
+    p.add_argument("--batch_size", type=int, default=256)  # Changed from 32
+    p.add_argument("--lr", type=float, default=1e-3)  # Changed from 1e-3 (was halved in old code)
     p.add_argument("--weight_decay", type=float, default=0.0)
-    p.add_argument("--lambda_decov", type=float, default=1e-4)  # safer default
+    p.add_argument("--lambda_decov", type=float, default=1e-4)
     p.add_argument("--amp", action="store_true")
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--save_dir", type=str, default="trained_models")
     p.add_argument("--results_dir", type=str, default="results")
-    p.add_argument("--timestep", type=float, default=0.8)
-    p.add_argument("--append_masks", action="store_true",
+    p.add_argument("--timestep", type=float, default=1.0)  # PHASE 2: Changed from 0.8 to 1.0
+    p.add_argument("--append_masks", action="store_true", default=True,  # PHASE 2: Default True
                    help="Append binary masks to values in discretizer (2F features).")
     p.add_argument("--diag", action="store_true", help="Run preflight diagnostics before training")
-    # torch.compile is opt in on many Windows setups
     p.add_argument("--compile", action="store_true", help="Enable torch.compile if Triton is available")
-
-    # New flag to match the paper’s metric computation exactly
     p.add_argument("--papers_metrics_mode", action="store_true",
                    help="Use the authors' metric implementation for AUROC and AUPRC")
     return p
@@ -63,9 +72,10 @@ def _ensure_materialized(timestep: float, append_masks: bool):
         not os.path.exists(NORM_STATS)
     )
     if need:
+        print("[INFO] Materialized cache not found. Running materialize_ram.py...")
         from materialize_ram import materialize_split
         for sp in ["train", "val", "test"]:
-            materialize_split(sp, timestep=timestep, append_masks=append_masks)
+            materialize_split(sp, timestep=timestep, append_masks=append_masks, impute_strategy='previous')
     else:
         print(f"[INFO] Using existing normalized cache in {CACHE_DIR}")
 
@@ -77,21 +87,26 @@ def _choose_workers():
 
 
 def make_model(input_dim, device, use_compile=False):
+    """
+    PHASE 1 & PHASE 3: Load the multi-channel GRU model with updated hyperparameters.
+    """
     try:
         from model_codes.ConCare_Model_v1 import ConCare
     except ModuleNotFoundError:
         from ConCare_Model_v1 import ConCare
-    print(f"[INFO] Creating model with input_dim={input_dim}")
+    
+    print(f"[INFO] Creating ConCare model with input_dim={input_dim}")
     model = ConCare(
         input_dim=input_dim,
-        hidden_dim=64,
-        d_model=64,
-        MHD_num_head=4,
-        d_ff=128,
+        hidden_dim=64,  # Same as authors
+        d_model=64,  # Same as authors
+        MHD_num_head=4,  # Same as authors
+        d_ff=256,  # PHASE 3: Changed from 128 to 256
         output_dim=1,
-        keep_prob=0.5,
+        keep_prob=0.5,  # Same as authors
         demographic_dim=12,
     ).to(device)
+    
     if use_compile:
         try:
             import triton  # noqa: F401
@@ -161,6 +176,11 @@ def best_threshold_from_probs(y_true, y_prob):
     return best
 
 
+def minpse_from_pr(precision: float, recall: float) -> float:
+    """Compute MINPSE at a specific operating point if we only know P and R."""
+    return min(precision, recall)
+
+
 # Choose which metric function to use
 def select_metric_fn(papers_mode: bool):
     if papers_mode:
@@ -179,49 +199,31 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
         X, D, y = X.to(device, non_blocking=True), D.to(device, non_blocking=True), y.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
         if scaler:
-            # bfloat16 is much more stable on 4090 than fp16
-            with amp.autocast("cuda", dtype=torch.bfloat16):
+            with amp.autocast("cuda"):
                 logits, decov = model(X, D)
                 decov = _sanitize_decov(decov)
-                bce = criterion(logits, y)
-                loss = bce + lambda_decov * decov
-            if not torch.isfinite(loss):
-                for g in optimizer.param_groups:
-                    g['lr'] = max(g['lr'] * 0.5, 1e-6)
-                if batch_idx % 50 == 0:
-                    print(f"[WARN] Non-finite loss at epoch {epoch} batch {batch_idx}; "
-                          f"decov={float(decov):.6f} bce={float(bce):.6f}; "
-                          f"lowering LR to {optimizer.param_groups[0]['lr']:.2e} and skipping batch")
-                scaler.update()
-                continue
+                bce_loss = criterion(logits, y)
+                loss = bce_loss + lambda_decov * decov
             scaler.scale(loss).backward()
+            # Gradient clipping
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer); scaler.update()
+            scaler.step(optimizer)
+            scaler.update()
         else:
             logits, decov = model(X, D)
             decov = _sanitize_decov(decov)
-            bce = criterion(logits, y)
-            loss = bce + lambda_decov * decov
-            if not torch.isfinite(loss):
-                for g in optimizer.param_groups:
-                    g['lr'] = max(g['lr'] * 0.5, 1e-6)
-                if batch_idx % 50 == 0:
-                    print(f"[WARN] Non-finite loss at epoch {epoch} batch {batch_idx}; "
-                          f"decov={float(decov):.6f} bce={float(bce):.6f}; "
-                          f"lowering LR to {optimizer.param_groups[0]['lr']:.2e} and skipping batch")
-                continue
+            bce_loss = criterion(logits, y)
+            loss = bce_loss + lambda_decov * decov
             loss.backward()
+            # Gradient clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-
+        
         total_loss += loss.item() * X.size(0)
-        # always gather probabilities in float32 for metric stability
-        probs.append(torch.sigmoid(logits).detach().to(torch.float32).cpu().numpy())
-        labels.append(y.detach().to(torch.float32).cpu().numpy())
-        if batch_idx == 0:
-            print(f"[DIAG] Epoch {epoch} batch {batch_idx} decov={float(decov):.6f} bce={float(bce):.6f}")
-
+        probs.append(torch.sigmoid(logits).to(torch.float32).cpu().numpy())
+        labels.append(y.to(torch.float32).cpu().numpy())
+    
     y_true = np.concatenate(labels).ravel()
     y_prob = np.concatenate(probs).ravel()
     m = metric_fn(y_true, y_prob)
@@ -249,6 +251,20 @@ def evaluate(model, loader, device, criterion, metric_fn):
     return m, y_true, y_prob
 
 
+def print_thresholded_report(yt_true, yt_prob, thr, header="📊 Test"):
+    yhat = (yt_prob >= thr).astype(np.int32)
+    tp = int(((yhat == 1) & (yt_true == 1)).sum())
+    fp = int(((yhat == 1) & (yt_true == 0)).sum())
+    tn = int(((yhat == 0) & (yt_true == 0)).sum())
+    fn = int(((yhat == 0) & (yt_true == 1)).sum())
+    prec = tp / max(tp + fp, 1)
+    rec  = tp / max(tp + fn, 1)
+    f1   = 0.0 if (prec + rec) == 0.0 else 2 * prec * rec / (prec + rec)
+    acc  = (tp + tn) / max(tp + tn + fp + fn, 1)
+    print(f"\n{header} @thr={thr:.2f}  acc={acc:.4f}  P={prec:.4f}  R={rec:.4f}  F1={f1:.4f}")
+    return acc, prec, rec, f1
+
+
 def main():
     args = build_argparser().parse_args()
     set_seed(42)
@@ -260,16 +276,24 @@ def main():
     else:
         print("⚠️ CUDA not available. Using CPU")
 
+    print("\n" + "="*60)
+    print("PHASE 1, 2, 3 UPDATES ACTIVE")
+    print("="*60)
+    print("Phase 1: Multi-channel GRU architecture")
+    print("Phase 2: timestep=1.0, masks=True, impute='previous'")
+    print("Phase 3: batch=256, lr=1e-3, d_ff=256, epochs=100")
+    print("="*60 + "\n")
+
     print("\n[INFO] Preparing RAM datasets")
     _ensure_materialized(args.timestep, args.append_masks)
 
     from ram_dataset import RAMDataset, pad_collate as ram_pad_collate
-    # Point RAMDataset at the fixed cache dir
     train_ds = RAMDataset("train", cache_dir=CACHE_DIR)
     val_ds   = RAMDataset("val",   cache_dir=CACHE_DIR)
     test_ds  = RAMDataset("test",  cache_dir=CACHE_DIR)
 
     X0, _, _ = train_ds[0]; input_dim = X0.shape[1]
+    print(f"[INFO] Detected input_dim={input_dim} (should be 2*F if masks appended)")
 
     workers, use_workers = _choose_workers()
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,  collate_fn=ram_pad_collate,
@@ -287,8 +311,7 @@ def main():
 
     model = make_model(input_dim, args.device, use_compile=args.compile)
 
-    # ---- Class-weighted BCE (improves recall) ----
-    # collect train labels once
+    # ---- Class-weighted BCE ----
     tmp_loader = DataLoader(train_ds, batch_size=1024, shuffle=False, collate_fn=ram_pad_collate,
                             num_workers=0, pin_memory=True)
     train_labels = []
@@ -303,7 +326,8 @@ def main():
         pos_weight=torch.tensor([pos_weight_value], device=args.device, dtype=torch.float32)
     )
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr * 0.5, weight_decay=args.weight_decay)
+    # PHASE 3: Full learning rate (no halving)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = amp.GradScaler("cuda") if args.amp and "cuda" in args.device else None
 
     os.makedirs(args.save_dir, exist_ok=True)
@@ -317,7 +341,8 @@ def main():
     print(f"\n🚀 Starting training at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"   Input dimension: {input_dim}")
     print(f"   Batch size: {args.batch_size}")
-    print(f"   Learning rate: {args.lr * 0.5}")
+    print(f"   Learning rate: {args.lr}")
+    print(f"   Feed-forward dim: 256")
     print(f"   Using AMP: {args.amp}")
     print(f"   Using torch.compile: {args.compile}")
     print(f"   Metrics source: {metric_source}{' (papers_metrics_mode ON)' if args.papers_metrics_mode else ''}\n")
@@ -333,8 +358,7 @@ def main():
 
         # choose threshold that maximizes F1 on current val
         thr, f1, p, r = best_threshold_from_probs(yv_true, yv_prob)
-        if epoch % 1 == 0:
-            print(f"          Val@thr={thr:.2f}  F1={f1:.4f}  P={p:.4f}  R={r:.4f}")
+        print(f"          Val@thr={thr:.2f}  F1={f1:.4f}  P={p:.4f}  R={r:.4f}")
 
         # track best by AUPRC
         if va["auprc"] > best_auprc:
@@ -347,23 +371,45 @@ def main():
         model.load_state_dict(ckpt["model"])
 
     test_metrics, yt_true, yt_prob = evaluate(model, test_loader, args.device, criterion, metric_fn)
-    print("\n📊 Test Set Results (threshold-free)")
-    for k, v in test_metrics.items():
-        print(f"{k:>8}: {v:.4f}")
 
-    # also print a thresholded report using best val threshold on the full val set
-    va_full, yv_true, yv_prob = evaluate(model, val_loader, args.device, criterion, metric_fn)
-    thr, f1, p, r = best_threshold_from_probs(yv_true, yv_prob)
-    yhat = (yt_prob >= thr).astype(np.int32)
-    tp = int(((yhat == 1) & (yt_true == 1)).sum())
-    fp = int(((yhat == 1) & (yt_true == 0)).sum())
-    tn = int(((yhat == 0) & (yt_true == 0)).sum())
-    fn = int(((yhat == 0) & (yt_true == 1)).sum())
-    prec = tp / max(tp + fp, 1)
-    rec  = tp / max(tp + fn, 1)
-    f1t  = 0.0 if (prec + rec) == 0.0 else 2 * prec * rec / (prec + rec)
-    acc  = (tp + tn) / max(tp + tn + fp + fn, 1)
-    print(f"\n📊 Test @thr={thr:.2f}  acc={acc:.4f}  P={prec:.4f}  R={rec:.4f}  F1={f1t:.4f}")
+    # Enrich with MINPSE summary around the best precision and recall balance if available
+    if ours_minpse is not None:
+        try:
+            mp = ours_minpse(yt_true, yt_prob)
+            test_metrics = dict(test_metrics)
+            test_metrics.update({
+                "minpse": mp.get("minpse", float("nan")),
+                "minpse_thr": mp.get("best_thr", float("nan")),
+                "minpse_prec": mp.get("precision", float("nan")),
+                "minpse_rec": mp.get("recall", float("nan")),
+            })
+        except Exception:
+            pass
+
+    print("\n📊 Test Set Results (threshold-free)")
+    for k in sorted(test_metrics.keys()):
+        v = test_metrics[k]
+        try:
+            print(f"{k:>8}: {float(v):.4f}")
+        except Exception:
+            print(f"{k:>8}: {v}")
+
+    # Use best validation threshold for the final "authors-style" operating point
+    va_full, yv_true_full, yv_prob_full = evaluate(model, val_loader, args.device, criterion, metric_fn)
+    best_thr, _, _, _ = best_threshold_from_probs(yv_true_full, yv_prob_full)
+
+    acc_best, prec_best, rec_best, f1_best = print_thresholded_report(
+        yt_true, yt_prob, best_thr, header="📊 Test @best_val_thr"
+    )
+    minpse_best = minpse_from_pr(prec_best, rec_best)
+
+    print("\n📊 Test Set Results (authors-style)")
+    print(f"     acc: {acc_best:.4f}")
+    print(f"      f1: {f1_best:.4f}")
+    print(f"   auroc: {test_metrics.get('auroc', float('nan')):.4f}")
+    print(f"   auprc: {test_metrics.get('auprc', float('nan')):.4f}")
+    print(f"  minpse: {minpse_best:.4f}")
+    print(f"   thr_used: {best_thr:.2f}")
 
     print("\n✅ Training completed successfully")
 

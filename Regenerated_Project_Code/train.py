@@ -23,11 +23,6 @@ try:
 except Exception:
     ours_minpse = None
 
-# Authors' metrics for papers_metrics_mode, if available
-try:
-    from metrics_authors import binary_metrics as authors_binary_metrics
-except Exception:
-    authors_binary_metrics = None
 
 # ---- Fixed cache locations inside the project ----
 CACHE_DIR = os.path.join("data", "normalized_data_cache")
@@ -83,9 +78,9 @@ def _choose_workers():
 
 def make_model(input_dim, device, use_compile=False):
     try:
-        from model_codes.ConCare_Model_v1 import ConCare
+        from model_codes.ConCare_Model_v2 import ConCare
     except ModuleNotFoundError:
-        from ConCare_Model_v1 import ConCare
+        from ConCare_Model_v2 import ConCare
     print(f"[INFO] Creating model with input_dim={input_dim}")
     model = ConCare(
         input_dim=input_dim,
