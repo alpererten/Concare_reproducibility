@@ -40,7 +40,7 @@ def build_argparser():
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight_decay", type=float, default=0.0)
-    p.add_argument("--lambda_decov", type=float, default=1e-4)  # safer default
+    p.add_argument("--lambda_decov", type=float, default=1e-4)
     p.add_argument("--amp", action="store_true")
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--save_dir", type=str, default="trained_models")
@@ -189,7 +189,6 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
         X, D, y = X.to(device, non_blocking=True), D.to(device, non_blocking=True), y.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
         if scaler:
-            # bfloat16 is usually more stable than fp16 on Ada GPUs
             with amp.autocast("cuda", dtype=torch.bfloat16):
                 logits, decov = model(X, D)
                 decov = _sanitize_decov(decov)
@@ -226,7 +225,6 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
             optimizer.step()
 
         total_loss += loss.item() * X.size(0)
-        # always gather probabilities in float32 for metric stability
         probs.append(torch.sigmoid(logits).detach().to(torch.float32).cpu().numpy())
         labels.append(y.detach().to(torch.float32).cpu().numpy())
         if batch_idx == 0:
@@ -288,7 +286,6 @@ def main():
     _ensure_materialized(args.timestep, args.append_masks)
 
     from ram_dataset import RAMDataset, pad_collate as ram_pad_collate
-    # Point RAMDataset at the fixed cache dir
     train_ds = RAMDataset("train", cache_dir=CACHE_DIR)
     val_ds   = RAMDataset("val",   cache_dir=CACHE_DIR)
     test_ds  = RAMDataset("test",  cache_dir=CACHE_DIR)
@@ -311,7 +308,7 @@ def main():
 
     model = make_model(input_dim, args.device, use_compile=args.compile)
 
-    # ---- Class-weighted BCE (improves recall) ----
+    # ---- Class-weighted BCE ----
     tmp_loader = DataLoader(train_ds, batch_size=1024, shuffle=False, collate_fn=ram_pad_collate,
                             num_workers=0, pin_memory=True)
     train_labels = []
@@ -370,11 +367,11 @@ def main():
 
     test_metrics, yt_true, yt_prob = evaluate(model, test_loader, args.device, criterion, metric_fn)
 
-    # Augment with MINPSE (threshold-free summary around the best P~R point if available)
+    # Enrich with MINPSE summary around the best precision and recall balance if available
     if ours_minpse is not None:
         try:
             mp = ours_minpse(yt_true, yt_prob)
-            test_metrics = dict(test_metrics)  # copy to avoid side effects
+            test_metrics = dict(test_metrics)
             test_metrics.update({
                 "minpse": mp.get("minpse", float("nan")),
                 "minpse_thr": mp.get("best_thr", float("nan")),
@@ -385,7 +382,6 @@ def main():
             pass
 
     print("\n📊 Test Set Results (threshold-free)")
-    # Keep the richer threshold-free dump style you liked
     for k in sorted(test_metrics.keys()):
         v = test_metrics[k]
         try:
@@ -393,14 +389,26 @@ def main():
         except Exception:
             print(f"{k:>8}: {v}")
 
-    # also print a thresholded report using best val threshold on the full val set
-    va_full, yv_true, yv_prob = evaluate(model, val_loader, args.device, criterion, metric_fn)
-    thr, f1, p, r = best_threshold_from_probs(yv_true, yv_prob)
-    print_thresholded_report(yt_true, yt_prob, thr, header="📊 Test")
+    # Use best validation threshold for the final "authors-style" operating point
+    va_full, yv_true_full, yv_prob_full = evaluate(model, val_loader, args.device, criterion, metric_fn)
+    best_thr, _, _, _ = best_threshold_from_probs(yv_true_full, yv_prob_full)
 
-    # Also report a fixed operating point @thr=0.66, including AUROC, AUPRC, and MINPSE@thr
+    acc_best, prec_best, rec_best, f1_best = print_thresholded_report(
+        yt_true, yt_prob, best_thr, header="📊 Test @best_val_thr"
+    )
+    minpse_best = minpse_from_pr(prec_best, rec_best)
+
+    print("\n📊 Test Set Results (authors-style)")
+    print(f"     acc: {acc_best:.4f}")
+    print(f"      f1: {f1_best:.4f}")
+    print(f"   auroc: {test_metrics.get('auroc', float('nan')):.4f}")
+    print(f"   auprc: {test_metrics.get('auprc', float('nan')):.4f}")
+    print(f"  minpse: {minpse_best:.4f}")
+    print(f"   thr_used: {best_thr:.2f}")
+
+    # Optional fixed operating point for easy comparison
     thr_fixed = 0.66
-    _, prec66, rec66, f1_66 = print_thresholded_report(yt_true, yt_prob, thr_fixed, header="📊 Test")
+    acc66, prec66, rec66, f1_66 = print_thresholded_report(yt_true, yt_prob, thr_fixed, header="📊 Test @thr=0.66")
     minpse_66 = minpse_from_pr(prec66, rec66)
     print(f"      auroc={test_metrics.get('auroc', float('nan')):.4f} "
           f"auprc={test_metrics.get('auprc', float('nan')):.4f} "
