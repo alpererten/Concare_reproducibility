@@ -17,12 +17,13 @@ def pad_collate(batch):
 class RAMDataset(Dataset):
     """
     Loads discretized + normalized arrays from NPZ into memory.
-    Demographics are zeros by default. Wire your own scaler here later if needed.
+    If demographics 'D' is present in the NPZ, uses it; otherwise falls back to zeros.
     """
-    def __init__(self, split, cache_dir="npz_cache", demographic_dim=12):
+    def __init__(self, split, cache_dir="data/normalized_data_cache", demographic_dim=12):
         z = np.load(f"{cache_dir}/{split}.npz", allow_pickle=True)
         self.Xs = z["X"]  # ragged [T,F]
         self.ys = z["y"].astype(np.float32)
+        self.Ds = z["D"] if "D" in z.files else None
         self.demo_dim = demographic_dim
 
     def __len__(self):
@@ -30,6 +31,9 @@ class RAMDataset(Dataset):
 
     def __getitem__(self, i):
         X = self.Xs[i].astype(np.float32)
-        D = np.zeros((self.demo_dim,), dtype=np.float32)
+        if self.Ds is not None:
+            D = self.Ds[i].astype(np.float32)
+        else:
+            D = np.zeros((self.demo_dim,), dtype=np.float32)
         y = np.array([self.ys[i]], dtype=np.float32)
         return torch.from_numpy(X), torch.from_numpy(D), torch.from_numpy(y)
