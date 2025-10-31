@@ -131,7 +131,7 @@ def diag_preflight(train_ds, device, collate_fn):
         logits, decov = model(Xb, Db)
         tensor_stats("logits", logits); tensor_stats("decov", decov)
         try:
-            bce = torch.nn.functional.binary_cross_entropy_with_logits(logits, yb)
+            bce = torch.nn.functional.binary_cross_entropy(logits, yb)
             print(f"[DIAG] BCE on first batch: {float(bce):.6f}")
         except Exception as e:
             print(f"[DIAG] BCE could not be computed. Reason: {e}")
@@ -220,7 +220,7 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
             optimizer.step()
 
         total_loss += loss.item() * X.size(0)
-        probs.append(torch.sigmoid(logits).detach().to(torch.float32).cpu().numpy())
+        probs.append(logits.detach().to(torch.float32).cpu().numpy())
         labels.append(y.detach().to(torch.float32).cpu().numpy())
         if batch_idx == 0:
             print(f"[DIAG] Epoch {epoch} batch {batch_idx} decov={float(decov):.6f} bce={float(bce):.6f}")
@@ -243,7 +243,7 @@ def evaluate(model, loader, device, criterion, metric_fn):
         decov = _sanitize_decov(decov)
         loss = criterion(logits, y)
         total_loss += loss.item() * X.size(0)
-        probs.append(torch.sigmoid(logits).to(torch.float32).cpu().numpy())
+        probs.append(logits.to(torch.float32).cpu().numpy())
         labels.append(y.to(torch.float32).cpu().numpy())
     y_true = np.concatenate(labels).ravel()
     y_prob = np.concatenate(probs).ravel()
