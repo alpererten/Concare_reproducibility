@@ -23,6 +23,14 @@ try:
 except Exception:
     ours_minpse = None
 
+# Authors' exact metrics for parity (AUROC, AUPRC, MinPSE, F1, etc.)
+try:
+    from metrics_authors import print_metrics_binary as authors_print_metrics_binary
+    from metrics_authors import binary_metrics as authors_binary_metrics
+except Exception:
+    authors_print_metrics_binary = None
+    authors_binary_metrics = None
+
 
 # ---- Fixed cache locations inside the project ----
 CACHE_DIR = os.path.join("data", "normalized_data_cache")
@@ -166,11 +174,11 @@ def minpse_from_pr(precision: float, recall: float) -> float:
     return 1.0 - 0.5 * (precision + recall)
 
 
-# Choose which metric function to use
+# Choose which metric function to use (threshold-free set)
 def select_metric_fn(papers_mode: bool):
     if papers_mode:
         if authors_binary_metrics is None:
-            print("[WARN] papers_metrics_mode is requested but metrics_authors.py is not available. Falling back to local metrics")
+            print("[WARN] papers_metrics_mode requested but metrics_authors.py is not available. Falling back to local metrics")
             return ours_binary_metrics, "local"
         return authors_binary_metrics, "authors"
     return ours_binary_metrics, "local"
@@ -303,20 +311,25 @@ def main():
 
     model = make_model(input_dim, args.device, use_compile=args.compile)
 
-    
     # ---- Unweighted BCE on probabilities ----
     criterion = torch.nn.BCELoss()
-
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-
-
-
-
     scaler = amp.GradScaler("cuda") if args.amp and "cuda" in args.device else None
 
     os.makedirs(args.save_dir, exist_ok=True)
+    os.makedirs(args.results_dir, exist_ok=True)
     best_path = os.path.join(args.save_dir, "best_concare.pt")
     best_auprc = -1.0
+    best_epoch = -1
+
+    # Prepare timestamped results log for this run
+    run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    results_path = os.path.join(args.results_dir, f"train_val_test_log_{run_timestamp}.txt")
+    with open(results_path, "w") as f:
+        f.write(f"=== ConCare Training Log Started ({run_timestamp}) ===\n")
+        f.write(f"epochs={args.epochs}  batch_size={args.batch_size}  lr={args.lr}  weight_decay={args.weight_decay}  "
+                f"lambda_decov={args.lambda_decov}  amp={args.amp}  compile={args.compile}\n")
+        f.write(f"input_dim={input_dim}  timestep={args.timestep}  append_masks={args.append_masks}\n\n")
 
     # decov warmup
     target_lambda = args.lambda_decov
@@ -343,10 +356,25 @@ def main():
         thr, f1, p, r = best_threshold_from_probs(yv_true, yv_prob)
         print(f"          Val@thr={thr:.2f}  F1={f1:.4f}  P={p:.4f}  R={r:.4f}")
 
-        # track best by AUPRC
+        # --- Authors-style validation metrics on the SAME predictions ---
+        if authors_print_metrics_binary is not None:
+            authors_val = authors_print_metrics_binary(yv_true, yv_prob, verbose=0)
+            print(f"[AUTHORS] Val acc={authors_val['acc']:.4f} "
+                  f"AUROC={authors_val['auroc']:.4f} AUPRC={authors_val['auprc']:.4f} "
+                  f"MinPSE={authors_val['minpse']:.4f} F1={authors_val['f1_score']:.4f}")
+
+        # track best by AUPRC and log to file (include authors metrics if available)
         if va["auprc"] > best_auprc:
             best_auprc = va["auprc"]
+            best_epoch = epoch
             torch.save({"model": model.state_dict(), "epoch": epoch}, best_path)
+            with open(results_path, "a") as f:
+                f.write(f"New best model at epoch {epoch}: val AUPRC={va['auprc']:.4f}, AUROC={va['auroc']:.4f}, "
+                        f"loss={va['loss']:.4f}, thr={thr:.2f}, F1={f1:.4f}, P={p:.4f}, R={r:.4f}\n")
+                if authors_print_metrics_binary is not None:
+                    f.write(f"[AUTHORS] acc={authors_val['acc']:.4f} auroc={authors_val['auroc']:.4f} "
+                            f"auprc={authors_val['auprc']:.4f} minpse={authors_val['minpse']:.4f} "
+                            f"f1={authors_val['f1_score']:.4f}\n")
 
     print(f"\n📊 Evaluating best checkpoint on TEST set")
     ckpt = torch.load(best_path, map_location=args.device) if os.path.exists(best_path) else None
@@ -394,6 +422,13 @@ def main():
     print(f"  minpse: {minpse_best:.4f}")
     print(f"   thr_used: {best_thr:.2f}")
 
+    # --- Authors-style full test metrics from authors' function ---
+    if authors_print_metrics_binary is not None:
+        authors_test = authors_print_metrics_binary(yt_true, yt_prob, verbose=0)
+        print(f"[AUTHORS] Test acc={authors_test['acc']:.4f} "
+              f"AUROC={authors_test['auroc']:.4f} AUPRC={authors_test['auprc']:.4f} "
+              f"MinPSE={authors_test['minpse']:.4f} F1={authors_test['f1_score']:.4f}")
+
     # Optional fixed operating point for easy comparison
     thr_fixed = 0.66
     acc66, prec66, rec66, f1_66 = print_thresholded_report(yt_true, yt_prob, thr_fixed, header="📊 Test @thr=0.66")
@@ -402,6 +437,32 @@ def main():
           f"auprc={test_metrics.get('auprc', float('nan')):.4f} "
           f"minpse={minpse_66:.4f}")
 
+    # Save final test results to the same timestamped log (include authors metrics if available)
+    with open(results_path, "a") as f:
+        f.write("\n=== Final Test Results ===\n")
+        f.write(f"best_epoch={best_epoch}  best_val_auprc={best_auprc:.4f}\n")
+        f.write("\n-- threshold-free --\n")
+        for k in sorted(test_metrics.keys()):
+            v = test_metrics[k]
+            try:
+                f.write(f"{k:>8}: {float(v):.4f}\n")
+            except Exception:
+                f.write(f"{k:>8}: {v}\n")
+        f.write("\n-- authors-style @best_val_thr --\n")
+        f.write(f"acc={acc_best:.4f}  f1={f1_best:.4f}  auroc={test_metrics.get('auroc', float('nan')):.4f}  "
+                f"auprc={test_metrics.get('auprc', float('nan')):.4f}  minpse={minpse_best:.4f}  thr_used={best_thr:.2f}\n")
+        if authors_print_metrics_binary is not None:
+            f.write("\n=== AUTHORS-STYLE TEST METRICS ===\n")
+            for k in ["acc","auroc","auprc","minpse","f1_score","prec0","prec1","rec0","rec1"]:
+                try:
+                    f.write(f"{k}={authors_test[k]:.6f}\n")
+                except Exception:
+                    pass
+        f.write("\n-- fixed @thr=0.66 --\n")
+        f.write(f"acc={acc66:.4f}  f1={f1_66:.4f}  auroc={test_metrics.get('auroc', float('nan')):.4f}  "
+                f"auprc={test_metrics.get('auprc', float('nan')):.4f}  minpse={minpse_66:.4f}\n")
+
+    print(f"\n[INFO] Saved run log to {results_path}")
     print("\n✅ Training completed successfully")
 
 

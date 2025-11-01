@@ -2,6 +2,8 @@ import os, sys, csv, math
 import numpy as np
 from typing import List, Tuple, Optional
 
+import pandas as pd
+from data_preprocessing import DemoScaler  # uses artifacts/demo_norm.npz
 
 # Always clean existing cache before re-materializing
 CACHE_DIR = os.path.join("data", "normalized_data_cache")
@@ -71,11 +73,11 @@ class SimpleTimeseriesReader:
 class DiscretizerNP:
     """
     Settings aligned to authors:
-      timestep = 1.0
+      timestep = 0.8
       append_masks = True
       impute_strategy = 'previous' (forward-fill)
     """
-    def __init__(self, timestep: float = 1.0, append_masks: bool = True, impute_strategy: str = 'previous'):
+    def __init__(self, timestep: float = 0.8, append_masks: bool = True, impute_strategy: str = 'previous'):
         if timestep <= 0:
             raise ValueError("timestep must be positive")
         self.dt = float(timestep)
@@ -216,10 +218,85 @@ def _to_fixed_width(X: np.ndarray, append_masks: bool, n_value_feats: int) -> np
     return X[:, :TARGET_WIDTH]
 
 
+# ---------- Demographics helper (SAFE — no target leakage) ----------
+def _load_demo_row(stay_csv_path: str) -> np.ndarray:
+    """
+    Build a safe 12-D demographic vector:
+      [Age, Gender_bin, Ethnicity_code, Height, Weight, DxCount, 0, 0, 0, 0, 0, 0]
+
+    Hard-excludes targets/post-outcome/IDs to prevent leakage:
+      Mortality / y_true / label / in_hospital_mortality / Length of Stay / IDs...
+    """
+    base = os.path.basename(stay_csv_path).replace("_timeseries.csv", "")
+    demo_dir = os.path.join("data", "demographic")
+    candidates = [
+        os.path.join(demo_dir, base + ".csv"),
+        os.path.join(demo_dir, base),
+    ]
+
+    forbidden_exact = {
+        "y", "y_true", "label", "labels",
+        "mortality", "Mortality",
+        "in_hospital_mortality", "in_hosp_mort", "death", "outcome", "target",
+        "Length of Stay", "length_of_stay", "los",
+        "Icustay", "ICUSTAY", "ICUSTAY_ID", "HADM_ID", "SUBJECT_ID",
+    }
+
+    D = np.zeros((12,), dtype=np.float32)
+
+    for p in candidates:
+        if not os.path.exists(p):
+            continue
+        try:
+            df = pd.read_csv(p)
+        except Exception:
+            continue
+
+        cols = set(df.columns)
+
+        # Basic fields (safe)
+        age = float(df["Age"].iloc[0]) if "Age" in cols else 0.0
+
+        # Gender may be numeric or string; map to {0,1}
+        if "Gender" in cols:
+            gval = df["Gender"].iloc[0]
+            try:
+                gender = float(gval)
+            except Exception:
+                g = str(gval).strip().lower()
+                gender = 1.0 if g in ("m", "male", "1", "true", "yes") else 0.0
+        elif "Sex" in cols:
+            g = str(df["Sex"].iloc[0]).strip().lower()
+            gender = 1.0 if g in ("m", "male", "1", "true", "yes") else 0.0
+        else:
+            gender = 0.0
+
+        # Ethnicity: if numeric use it; otherwise 0 (avoid ad-hoc string hashing)
+        try:
+            ethnicity = float(df["Ethnicity"].iloc[0]) if "Ethnicity" in cols else 0.0
+        except Exception:
+            ethnicity = 0.0
+
+        height = float(df["Height"].iloc[0]) if "Height" in cols else 0.0
+        weight = float(df["Weight"].iloc[0]) if "Weight" in cols else 0.0
+
+        # Count number of positive diagnoses (safe aggregate)
+        dx_cols = [c for c in df.columns if c.startswith("Diagnosis ")]
+        # Drop any forbidden columns that accidentally look numeric
+        dx_cols = [c for c in dx_cols if c not in forbidden_exact]
+        dx_count = float(df[dx_cols].iloc[0].sum()) if dx_cols else 0.0
+
+        D[:6] = [age, gender, ethnicity, height, weight, dx_count]
+        D = np.nan_to_num(D, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+        break
+
+    return D
+
+
 # ---------- Materialization ----------
 def materialize_split(
     split: str,
-    timestep: float = 1.0,
+    timestep: float = 0.8,
     append_masks: bool = True,
     impute_strategy: str = 'previous',
 ):
@@ -247,7 +324,13 @@ def materialize_split(
     norm = NormalizerNP(normalizer_stats)
     need_fit = (split == "train") and (norm.means is None or norm.stds is None)
 
-    X_list, y_list = [], []
+    # --- demographics scaler ---
+    demo_scaler = DemoScaler("artifacts/demo_norm.npz")
+    have_demo_stats = demo_scaler.load()
+    fit_demo = (split == "train") and not have_demo_stats
+    raw_demo_rows: list = []  # only used if fitting scaler on train
+
+    X_list, D_list, y_list = [], [], []
     tmp = []
 
     n_value_feats: Optional[int] = None
@@ -264,12 +347,23 @@ def materialize_split(
         # Enforce fixed width = 76
         X = _to_fixed_width(X, append_masks, n_value_feats)
 
+        # --- timeseries normalization ---
         if need_fit:
             tmp.append(X.copy())
         else:
             X = norm.transform(X)
 
+        # --- demographics extraction (safe) ---
+        d_raw = _load_demo_row(ts_path)
+        if fit_demo:
+            raw_demo_rows.append(d_raw)
+            D = d_raw
+        else:
+            D = demo_scaler.transform(d_raw) if demo_scaler.means is not None else d_raw
+        D = np.nan_to_num(D, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
         X_list.append(X.astype(np.float32))
+        D_list.append(D)
         y_list.append(np.float32(y))
 
         if (i + 1) % 1000 == 0:
@@ -283,24 +377,47 @@ def materialize_split(
         # Transform all training data
         X_list = [norm.transform(x) for x in X_list]
 
-    # Save to disk
+    # Fit demo scaler on training split if needed, then transform collected rows
+    if fit_demo:
+        print(f"[INFO] Fitting demo scaler on {len(raw_demo_rows)} samples...")
+        if len(raw_demo_rows) == 0:
+            demo_scaler.means = np.zeros((12,), np.float32)
+            demo_scaler.stds  = np.ones((12,),  np.float32)
+        else:
+            demo_scaler.fit_from_rows(raw_demo_rows)
+        demo_scaler.save()
+        D_list = [demo_scaler.transform(d) for d in D_list]
+
+    # Optional leak guard on train split
+    if split == "train" and len(D_list) > 100:
+        Y = np.array(y_list, dtype=np.float32)
+        Dmat = np.vstack(D_list)  # [N,12]
+        bad = False
+        for j in range(min(12, Dmat.shape[1])):
+            dj = Dmat[:, j]
+            if np.std(dj) > 1e-6:
+                corr = np.corrcoef(dj, Y)[0, 1]
+                if np.isfinite(corr) and abs(corr) > 0.90:
+                    print(f"[WARN] Demographic feature {j} correlates {corr:.3f} with label — check demographics CSVs")
+                    bad = True
+                    break
+        if not bad:
+            print("[INFO] Leak guard: no demo feature shows |corr| > 0.90 with labels on train")
+
+    # Save to disk (now includes D)
     out_path = os.path.join(output_dir, f"{split}.npz")
-    np.savez_compressed(out_path, X=np.array(X_list, dtype=object), y=np.array(y_list, dtype=np.float32))
+    np.savez_compressed(
+        out_path,
+        X=np.array(X_list, dtype=object),
+        D=np.array(D_list, dtype=np.float32),
+        y=np.array(y_list, dtype=np.float32),
+    )
 
     print(f"[OK] Materialized {split}: {len(y_list)} samples → {out_path}")
     print(f"     Enforced input_dim = {X_list[0].shape[1]} (expected {TARGET_WIDTH})\n")
 
 
 if __name__ == "__main__":
-    print("\n" + "="*60)
-    print("PHASE 2: DATA PREPROCESSING FIXES WITH FIXED WIDTH")
-    print("="*60)
-    print("Changes applied:")
-    print("  1. timestep set to 1.0")
-    print("  2. masks appended to values")
-    print("  3. forward-fill imputation")
-    print("  4. input width forced to 76")
-    print("="*60 + "\n")
-
     for sp in ["train", "val", "test"]:
-        materialize_split(sp, timestep=1.0, append_masks=True, impute_strategy='previous')
+        # Authors: timestep=0.8, masks appended, previous-fill
+        materialize_split(sp, timestep=0.8, append_masks=True, impute_strategy='previous')

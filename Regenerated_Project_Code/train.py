@@ -78,9 +78,9 @@ def _choose_workers():
 
 def make_model(input_dim, device, use_compile=False):
     try:
-        from model_codes.ConCare_Model_v2 import ConCare
+        from model_codes.ConCare_Model_v3 import ConCare
     except ModuleNotFoundError:
-        from ConCare_Model_v2 import ConCare
+        from ConCare_Model_v3 import ConCare
     print(f"[INFO] Creating model with input_dim={input_dim}")
     model = ConCare(
         input_dim=input_dim,
@@ -131,7 +131,7 @@ def diag_preflight(train_ds, device, collate_fn):
         logits, decov = model(Xb, Db)
         tensor_stats("logits", logits); tensor_stats("decov", decov)
         try:
-            bce = torch.nn.functional.binary_cross_entropy_with_logits(logits, yb)
+            bce = torch.nn.functional.binary_cross_entropy(logits, yb)
             print(f"[DIAG] BCE on first batch: {float(bce):.6f}")
         except Exception as e:
             print(f"[DIAG] BCE could not be computed. Reason: {e}")
@@ -220,7 +220,7 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
             optimizer.step()
 
         total_loss += loss.item() * X.size(0)
-        probs.append(torch.sigmoid(logits).detach().to(torch.float32).cpu().numpy())
+        probs.append(logits.detach().to(torch.float32).cpu().numpy())
         labels.append(y.detach().to(torch.float32).cpu().numpy())
         if batch_idx == 0:
             print(f"[DIAG] Epoch {epoch} batch {batch_idx} decov={float(decov):.6f} bce={float(bce):.6f}")
@@ -243,7 +243,7 @@ def evaluate(model, loader, device, criterion, metric_fn):
         decov = _sanitize_decov(decov)
         loss = criterion(logits, y)
         total_loss += loss.item() * X.size(0)
-        probs.append(torch.sigmoid(logits).to(torch.float32).cpu().numpy())
+        probs.append(logits.to(torch.float32).cpu().numpy())
         labels.append(y.to(torch.float32).cpu().numpy())
     y_true = np.concatenate(labels).ravel()
     y_prob = np.concatenate(probs).ravel()
@@ -303,27 +303,25 @@ def main():
 
     model = make_model(input_dim, args.device, use_compile=args.compile)
 
-    # ---- Class-weighted BCE ----
-    tmp_loader = DataLoader(train_ds, batch_size=1024, shuffle=False, collate_fn=ram_pad_collate,
-                            num_workers=0, pin_memory=True)
-    train_labels = []
-    for _, _, y in tmp_loader:
-        train_labels.append(y.cpu().numpy())
-    train_labels = np.concatenate(train_labels).ravel()
-    n_pos = float((train_labels > 0.5).sum())
-    n_neg = float((train_labels <= 0.5).sum())
-    pos_weight_value = n_neg / max(n_pos, 1.0)
-    print(f"[INFO] Class counts (train): pos={int(n_pos)} neg={int(n_neg)} pos_weight={pos_weight_value:.2f}")
-    criterion = torch.nn.BCEWithLogitsLoss(
-        pos_weight=torch.tensor([pos_weight_value], device=args.device, dtype=torch.float32)
-    )
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr * 0.5, weight_decay=args.weight_decay)
+    # ---- Unweighted BCE on probabilities ----
+    criterion = torch.nn.BCELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = amp.GradScaler("cuda") if args.amp and "cuda" in args.device else None
 
     os.makedirs(args.save_dir, exist_ok=True)
+    os.makedirs(args.results_dir, exist_ok=True)
     best_path = os.path.join(args.save_dir, "best_concare.pt")
     best_auprc = -1.0
+    best_epoch = -1
+
+    # Prepare timestamped results log for this run
+    run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    results_path = os.path.join(args.results_dir, f"train_val_test_log_{run_timestamp}.txt")
+    with open(results_path, "w") as f:
+        f.write(f"=== ConCare Training Log Started ({run_timestamp}) ===\n")
+        f.write(f"epochs={args.epochs}  batch_size={args.batch_size}  lr={args.lr}  weight_decay={args.weight_decay}  "
+                f"lambda_decov={args.lambda_decov}  amp={args.amp}  compile={args.compile}\n")
+        f.write(f"input_dim={input_dim}  timestep={args.timestep}  append_masks={args.append_masks}\n\n")
 
     # decov warmup
     target_lambda = args.lambda_decov
@@ -332,7 +330,7 @@ def main():
     print(f"\n🚀 Starting training at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"   Input dimension: {input_dim}")
     print(f"   Batch size: {args.batch_size}")
-    print(f"   Learning rate: {args.lr * 0.5}")
+    print(f"   Learning rate: {args.lr}")
     print(f"   Using AMP: {args.amp}")
     print(f"   Using torch.compile: {args.compile}")
     print(f"   Metrics source: {metric_source}{' (papers_metrics_mode ON)' if args.papers_metrics_mode else ''}\n")
@@ -350,10 +348,14 @@ def main():
         thr, f1, p, r = best_threshold_from_probs(yv_true, yv_prob)
         print(f"          Val@thr={thr:.2f}  F1={f1:.4f}  P={p:.4f}  R={r:.4f}")
 
-        # track best by AUPRC
+        # track best by AUPRC and log to file
         if va["auprc"] > best_auprc:
             best_auprc = va["auprc"]
+            best_epoch = epoch
             torch.save({"model": model.state_dict(), "epoch": epoch}, best_path)
+            with open(results_path, "a") as f:
+                f.write(f"New best model at epoch {epoch}: val AUPRC={va['auprc']:.4f}, AUROC={va['auroc']:.4f}, "
+                        f"loss={va['loss']:.4f}, thr={thr:.2f}, F1={f1:.4f}, P={p:.4f}, R={r:.4f}\n")
 
     print(f"\n📊 Evaluating best checkpoint on TEST set")
     ckpt = torch.load(best_path, map_location=args.device) if os.path.exists(best_path) else None
@@ -409,6 +411,25 @@ def main():
           f"auprc={test_metrics.get('auprc', float('nan')):.4f} "
           f"minpse={minpse_66:.4f}")
 
+    # Save final test results to the same timestamped log
+    with open(results_path, "a") as f:
+        f.write("\n=== Final Test Results ===\n")
+        f.write(f"best_epoch={best_epoch}  best_val_auprc={best_auprc:.4f}\n")
+        f.write("\n-- threshold-free --\n")
+        for k in sorted(test_metrics.keys()):
+            v = test_metrics[k]
+            try:
+                f.write(f"{k:>8}: {float(v):.4f}\n")
+            except Exception:
+                f.write(f"{k:>8}: {v}\n")
+        f.write("\n-- authors-style @best_val_thr --\n")
+        f.write(f"acc={acc_best:.4f}  f1={f1_best:.4f}  auroc={test_metrics.get('auroc', float('nan')):.4f}  "
+                f"auprc={test_metrics.get('auprc', float('nan')):.4f}  minpse={minpse_best:.4f}  thr_used={best_thr:.2f}\n")
+        f.write("\n-- fixed @thr=0.66 --\n")
+        f.write(f"acc={acc66:.4f}  f1={f1_66:.4f}  auroc={test_metrics.get('auroc', float('nan')):.4f}  "
+                f"auprc={test_metrics.get('auprc', float('nan')):.4f}  minpse={minpse_66:.4f}\n")
+
+    print(f"\n[INFO] Saved run log to {results_path}")
     print("\n✅ Training completed successfully")
 
 
