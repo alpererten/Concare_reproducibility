@@ -26,10 +26,8 @@ except Exception:
 # Authors' exact metrics for parity (AUROC, AUPRC, MinPSE, F1, etc.)
 try:
     from metrics_authors import print_metrics_binary as authors_print_metrics_binary
-    from metrics_authors import binary_metrics as authors_binary_metrics
-except Exception:
+except ModuleNotFoundError:
     authors_print_metrics_binary = None
-    authors_binary_metrics = None
 
 
 # ---- Fixed cache locations inside the project ----
@@ -176,11 +174,12 @@ def minpse_from_pr(precision: float, recall: float) -> float:
 
 # Choose which metric function to use (threshold-free set)
 def select_metric_fn(papers_mode: bool):
+    # Always use local threshold-free metrics for training curves
     if papers_mode:
-        if authors_binary_metrics is None:
-            print("[WARN] papers_metrics_mode requested but metrics_authors.py is not available. Falling back to local metrics")
-            return ours_binary_metrics, "local"
-        return authors_binary_metrics, "authors"
+        if authors_print_metrics_binary is None:
+            print("[WARN] papers_metrics_mode requested but metrics_authors.py not found. Using local metrics only.")
+        else:
+            print("[INFO] papers_metrics_mode ON — authors' print_metrics_binary will be reported alongside local metrics.")
     return ours_binary_metrics, "local"
 
 
@@ -358,7 +357,9 @@ def main():
 
         # --- Authors-style validation metrics on the SAME predictions ---
         if authors_print_metrics_binary is not None:
-            authors_val = authors_print_metrics_binary(yv_true, yv_prob, verbose=0)
+            # Flip so authors' column-1 corresponds to positive class score
+            auth_prob = 1.0 - yv_prob
+            authors_val = authors_print_metrics_binary(yv_true, auth_prob, verbose=0)
             print(f"[AUTHORS] Val acc={authors_val['acc']:.4f} "
                   f"AUROC={authors_val['auroc']:.4f} AUPRC={authors_val['auprc']:.4f} "
                   f"MinPSE={authors_val['minpse']:.4f} F1={authors_val['f1_score']:.4f}")
@@ -424,7 +425,8 @@ def main():
 
     # --- Authors-style full test metrics from authors' function ---
     if authors_print_metrics_binary is not None:
-        authors_test = authors_print_metrics_binary(yt_true, yt_prob, verbose=0)
+        auth_prob_test = 1.0 - yt_prob
+        authors_test = authors_print_metrics_binary(yt_true, auth_prob_test, verbose=0)
         print(f"[AUTHORS] Test acc={authors_test['acc']:.4f} "
               f"AUROC={authors_test['auroc']:.4f} AUPRC={authors_test['auprc']:.4f} "
               f"MinPSE={authors_test['minpse']:.4f} F1={authors_test['f1_score']:.4f}")

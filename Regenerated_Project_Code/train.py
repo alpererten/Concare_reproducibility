@@ -23,6 +23,12 @@ try:
 except Exception:
     ours_minpse = None
 
+# Authors' exact metrics for parity (AUROC, AUPRC, MinPSE, F1, etc.)
+try:
+    from metrics_authors import print_metrics_binary as authors_print_metrics_binary
+except ModuleNotFoundError:
+    authors_print_metrics_binary = None
+
 
 # ---- Fixed cache locations inside the project ----
 CACHE_DIR = os.path.join("data", "normalized_data_cache")
@@ -166,13 +172,14 @@ def minpse_from_pr(precision: float, recall: float) -> float:
     return 1.0 - 0.5 * (precision + recall)
 
 
-# Choose which metric function to use
+# Choose which metric function to use (threshold-free set)
 def select_metric_fn(papers_mode: bool):
+    # Always use local threshold-free metrics for training curves
     if papers_mode:
-        if authors_binary_metrics is None:
-            print("[WARN] papers_metrics_mode is requested but metrics_authors.py is not available. Falling back to local metrics")
-            return ours_binary_metrics, "local"
-        return authors_binary_metrics, "authors"
+        if authors_print_metrics_binary is None:
+            print("[WARN] papers_metrics_mode requested but metrics_authors.py not found. Using local metrics only.")
+        else:
+            print("[INFO] papers_metrics_mode ON — authors' print_metrics_binary will be reported alongside local metrics.")
     return ours_binary_metrics, "local"
 
 
@@ -348,7 +355,16 @@ def main():
         thr, f1, p, r = best_threshold_from_probs(yv_true, yv_prob)
         print(f"          Val@thr={thr:.2f}  F1={f1:.4f}  P={p:.4f}  R={r:.4f}")
 
-        # track best by AUPRC and log to file
+        # --- Authors-style validation metrics on the SAME predictions ---
+        if authors_print_metrics_binary is not None:
+            # Flip so authors' column-1 corresponds to positive class score
+            auth_prob = 1.0 - yv_prob
+            authors_val = authors_print_metrics_binary(yv_true, auth_prob, verbose=0)
+            print(f"[AUTHORS] Val acc={authors_val['acc']:.4f} "
+                  f"AUROC={authors_val['auroc']:.4f} AUPRC={authors_val['auprc']:.4f} "
+                  f"MinPSE={authors_val['minpse']:.4f} F1={authors_val['f1_score']:.4f}")
+
+        # track best by AUPRC and log to file (include authors metrics if available)
         if va["auprc"] > best_auprc:
             best_auprc = va["auprc"]
             best_epoch = epoch
@@ -356,6 +372,10 @@ def main():
             with open(results_path, "a") as f:
                 f.write(f"New best model at epoch {epoch}: val AUPRC={va['auprc']:.4f}, AUROC={va['auroc']:.4f}, "
                         f"loss={va['loss']:.4f}, thr={thr:.2f}, F1={f1:.4f}, P={p:.4f}, R={r:.4f}\n")
+                if authors_print_metrics_binary is not None:
+                    f.write(f"[AUTHORS] acc={authors_val['acc']:.4f} auroc={authors_val['auroc']:.4f} "
+                            f"auprc={authors_val['auprc']:.4f} minpse={authors_val['minpse']:.4f} "
+                            f"f1={authors_val['f1_score']:.4f}\n")
 
     print(f"\n📊 Evaluating best checkpoint on TEST set")
     ckpt = torch.load(best_path, map_location=args.device) if os.path.exists(best_path) else None
@@ -403,6 +423,14 @@ def main():
     print(f"  minpse: {minpse_best:.4f}")
     print(f"   thr_used: {best_thr:.2f}")
 
+    # --- Authors-style full test metrics from authors' function ---
+    if authors_print_metrics_binary is not None:
+        auth_prob_test = 1.0 - yt_prob
+        authors_test = authors_print_metrics_binary(yt_true, auth_prob_test, verbose=0)
+        print(f"[AUTHORS] Test acc={authors_test['acc']:.4f} "
+              f"AUROC={authors_test['auroc']:.4f} AUPRC={authors_test['auprc']:.4f} "
+              f"MinPSE={authors_test['minpse']:.4f} F1={authors_test['f1_score']:.4f}")
+
     # Optional fixed operating point for easy comparison
     thr_fixed = 0.66
     acc66, prec66, rec66, f1_66 = print_thresholded_report(yt_true, yt_prob, thr_fixed, header="📊 Test @thr=0.66")
@@ -411,7 +439,7 @@ def main():
           f"auprc={test_metrics.get('auprc', float('nan')):.4f} "
           f"minpse={minpse_66:.4f}")
 
-    # Save final test results to the same timestamped log
+    # Save final test results to the same timestamped log (include authors metrics if available)
     with open(results_path, "a") as f:
         f.write("\n=== Final Test Results ===\n")
         f.write(f"best_epoch={best_epoch}  best_val_auprc={best_auprc:.4f}\n")
@@ -425,6 +453,13 @@ def main():
         f.write("\n-- authors-style @best_val_thr --\n")
         f.write(f"acc={acc_best:.4f}  f1={f1_best:.4f}  auroc={test_metrics.get('auroc', float('nan')):.4f}  "
                 f"auprc={test_metrics.get('auprc', float('nan')):.4f}  minpse={minpse_best:.4f}  thr_used={best_thr:.2f}\n")
+        if authors_print_metrics_binary is not None:
+            f.write("\n=== AUTHORS-STYLE TEST METRICS ===\n")
+            for k in ["acc","auroc","auprc","minpse","f1_score","prec0","prec1","rec0","rec1"]:
+                try:
+                    f.write(f"{k}={authors_test[k]:.6f}\n")
+                except Exception:
+                    pass
         f.write("\n-- fixed @thr=0.66 --\n")
         f.write(f"acc={acc66:.4f}  f1={f1_66:.4f}  auroc={test_metrics.get('auroc', float('nan')):.4f}  "
                 f"auprc={test_metrics.get('auprc', float('nan')):.4f}  minpse={minpse_66:.4f}\n")
