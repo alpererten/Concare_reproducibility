@@ -411,4 +411,36 @@ def pad_collate(batch):
 
     D_stacked = torch.stack(Ds)
     y_stacked = torch.stack(ys)
-    return X_padded, D_stacked, y_stacked
+    return X_padded, D_stacked, y_stacked\n\n
+# Parity helper for authors' transformers
+# This does not change your existing classes, it only exposes the exact objects used by authors
+
+import os
+from pathlib import Path
+
+def get_authors_transformers(
+    timestep: float = 0.8,
+    imputation: str = "previous",
+    store_masks: bool = True,
+    start_time: str = "zero",
+    normalizer_state: str = "data/ihm_normalizer",
+    resources_dir: str = None,
+):
+    """
+    Return (Discretizer, Normalizer) that match the authors' implementations and configs.
+    This assumes 'preprocessing.py' and 'resources/discretizer_config.json' are present.
+    """
+    if resources_dir is None:
+        resources_dir = os.path.join(os.path.dirname(__file__), "resources")
+
+    from preprocessing import Discretizer, Normalizer  # authors' modules
+    disc = Discretizer(
+        timestep=timestep,
+        store_masks=store_masks,
+        impute_strategy=imputation,
+        start_time=start_time,
+        config_path=os.path.join(resources_dir, "discretizer_config.json"),
+    )
+    norm = Normalizer()
+    norm.load_params(normalizer_state)
+    return disc, norm

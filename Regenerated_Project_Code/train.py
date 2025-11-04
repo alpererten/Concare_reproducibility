@@ -7,6 +7,9 @@ import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 import argparse
+import glob
+import shutil
+from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -53,13 +56,148 @@ def build_argparser():
     p.add_argument("--compile", action="store_true", help="Enable torch.compile if Triton is available")
     p.add_argument("--papers_metrics_mode", action="store_true",
                    help="Use the authors' metric implementation for AUROC and AUPRC")
+
+    # -------- Parity mode options (authors' exact tensors) --------
+    p.add_argument("--parity_mode", action="store_true",
+                   help="Build cache using authors' Readers + Discretizer + Normalizer, then train")
+    p.add_argument("--parity_train_dir", type=str, default=None,
+                   help="Path to authors' TRAIN dataset dir containing timeseries CSVs")
+    p.add_argument("--parity_train_listfile", type=str, default=None,
+                   help="Path to authors' TRAIN listfile.csv")
+    p.add_argument("--parity_val_dir", type=str, default=None,
+                   help="Path to authors' VAL dataset dir")
+    p.add_argument("--parity_val_listfile", type=str, default=None,
+                   help="Path to authors' VAL listfile.csv")
+    p.add_argument("--parity_test_dir", type=str, default=None,
+                   help="Path to authors' TEST dataset dir")
+    p.add_argument("--parity_test_listfile", type=str, default=None,
+                   help="Path to authors' TEST listfile.csv")
+    # --------------------------------------------------------------
+
     return p
 
 
-def _ensure_materialized(timestep: float, append_masks: bool):
+def _assemble_from_cases(case_dir: Path, out_path: Path):
+    """
+    Assemble a split NPZ (X ragged, D 12-d rows or zeros, y) from per-stay .npz files
+    that contain at least X and y. Demographics are zeros here by design, since authors'
+    parity does not supply D.
+    """
+    files = sorted(case_dir.glob("*.npz"))
+    if len(files) == 0:
+        raise RuntimeError(f"No per-case NPZ files found in {case_dir}")
+    X_list, y_list, D_list = [], [], []
+    for f in files:
+        z = np.load(f, allow_pickle=True)
+        X = z["X"].astype(np.float32)
+        y = float(z["y"])
+        X_list.append(X)
+        y_list.append(np.float32(y))
+        D_list.append(np.zeros((12,), dtype=np.float32))  # parity does not add demographics
+    np.savez_compressed(
+        out_path,
+        X=np.array(X_list, dtype=object),
+        D=np.array(D_list, dtype=np.float32),
+        y=np.array(y_list, dtype=np.float32),
+    )
+    print(f"[PARITY] Assembled {len(y_list)} cases → {out_path}")
+
+
+def _materialize_authors_parity(args):
+    """
+    Use authors' pipeline via materialize_parity(), then gather its per-stay NPZs into
+    train.npz/val.npz/test.npz that RAMDataset expects. We isolate each split into a
+    temporary subfolder to avoid filename collisions across splits.
+    """
+    from materialize_ram import materialize_parity  # parity builder we added
+
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    tmp_train = Path(CACHE_DIR) / "cases_train"
+    tmp_val   = Path(CACHE_DIR) / "cases_val"
+    tmp_test  = Path(CACHE_DIR) / "cases_test"
+    for p in [tmp_train, tmp_val, tmp_test]:
+        if p.exists():
+            # Clean any old cases for a fresh run
+            for f in p.glob("*.npz"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+        else:
+            p.mkdir(parents=True, exist_ok=True)
+
+    # Helper to sweep fresh per-stay NPZs into a split folder
+    def _sweep_cases(target_dir: Path):
+        fresh = sorted(Path(CACHE_DIR).glob("*.npz"))
+        for f in fresh:
+            # Skip previously assembled split npz names
+            if f.name in ("train.npz", "val.npz", "test.npz", "np_norm_stats.npz"):
+                continue
+            shutil.move(str(f), str(target_dir))
+
+    # Train split
+    written_tr = materialize_parity(
+        dataset_dir=args.parity_train_dir,
+        listfile=args.parity_train_listfile,
+        task="ihm",
+        timestep=args.timestep,
+        imputation="previous",
+        store_masks=True,
+        start_time="zero",
+        normalizer_state="data/ihm_normalizer",
+        small_part=False,
+        limit=None,
+    )
+    print(f"[PARITY] Train wrote {written_tr} cases")
+    _sweep_cases(tmp_train)
+
+    # Val split
+    written_va = materialize_parity(
+        dataset_dir=args.parity_val_dir,
+        listfile=args.parity_val_listfile,
+        task="ihm",
+        timestep=args.timestep,
+        imputation="previous",
+        store_masks=True,
+        start_time="zero",
+        normalizer_state="data/ihm_normalizer",
+        small_part=False,
+        limit=None,
+    )
+    print(f"[PARITY] Val wrote {written_va} cases")
+    _sweep_cases(tmp_val)
+
+    # Test split
+    written_te = materialize_parity(
+        dataset_dir=args.parity_test_dir,
+        listfile=args.parity_test_listfile,
+        task="ihm",
+        timestep=args.timestep,
+        imputation="previous",
+        store_masks=True,
+        start_time="zero",
+        normalizer_state="data/ihm_normalizer",
+        small_part=False,
+        limit=None,
+    )
+    print(f"[PARITY] Test wrote {written_te} cases")
+    _sweep_cases(tmp_test)
+
+    # Assemble split files RAMDataset expects
+    _assemble_from_cases(tmp_train, Path(CACHE_DIR) / "train.npz")
+    _assemble_from_cases(tmp_val,   Path(CACHE_DIR) / "val.npz")
+    _assemble_from_cases(tmp_test,  Path(CACHE_DIR) / "test.npz")
+
+    # Leave a small marker stats file so _ensure_materialized() passes if called later
+    if not os.path.exists(NORM_STATS):
+        # Authors' normalizer is a pickle elsewhere. Here we only drop a marker.
+        np.savez_compressed(NORM_STATS, means=np.array([0.0], dtype=np.float32), stds=np.array([1.0], dtype=np.float32))
+
+
+def _ensure_materialized_default(timestep: float, append_masks: bool):
     """
     Ensure normalized NPZs + stats exist in data/normalized_data_cache/.
-    If not present, call materializer which writes to that directory.
+    If not present, call our default materializer which writes to that directory.
     """
     os.makedirs(CACHE_DIR, exist_ok=True)
     need = (
@@ -74,6 +212,27 @@ def _ensure_materialized(timestep: float, append_masks: bool):
             materialize_split(sp, timestep=timestep, append_masks=append_masks)
     else:
         print(f"[INFO] Using existing normalized cache in {CACHE_DIR}")
+
+
+def _ensure_materialized(args):
+    """
+    Branch between parity mode and default materializer.
+    """
+    if args.parity_mode:
+        required = [
+            args.parity_train_dir, args.parity_train_listfile,
+            args.parity_val_dir, args.parity_val_listfile,
+            args.parity_test_dir, args.parity_test_listfile,
+        ]
+        if any(x is None for x in required):
+            raise ValueError("parity_mode requires all of: "
+                             "--parity_train_dir --parity_train_listfile "
+                             "--parity_val_dir --parity_val_listfile "
+                             "--parity_test_dir --parity_test_listfile")
+        print("[INFO] Parity mode ON — building cache with authors' pipeline")
+        _materialize_authors_parity(args)
+    else:
+        _ensure_materialized_default(args.timestep, args.append_masks)
 
 
 def _choose_workers():
@@ -285,7 +444,7 @@ def main():
         print("⚠️ CUDA not available. Using CPU")
 
     print("\n[INFO] Preparing RAM datasets")
-    _ensure_materialized(args.timestep, args.append_masks)
+    _ensure_materialized(args)
 
     from ram_dataset import RAMDataset, pad_collate as ram_pad_collate
     train_ds = RAMDataset("train", cache_dir=CACHE_DIR)
