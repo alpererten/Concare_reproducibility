@@ -229,3 +229,25 @@ class Normalizer:
         for col in fields:
             ret[:, col] = (X[:, col] - self._means[col]) / self._stds[col]
         return ret
+    
+    def set_params(self, means, stds):
+        self._means = np.asarray(means, dtype=np.float32)
+        self._stds  = np.asarray(stds,  dtype=np.float32)
+        eps = 1e-7
+        self._stds[self._stds < eps] = eps
+
+    def fit_from_arrays(self, X_iterable):
+        """
+        X_iterable: an iterable of 2D numpy arrays shaped [T_i, F] with the SAME feature layout.
+        Fills self._means and self._stds in memory and returns self.
+        """
+        for X in X_iterable:
+            self._feed_data(X)   # already implemented in Normalizer
+        # mirror _save_params math but keep it in memory
+        
+        eps = 1e-7
+        N = self._count
+        self._means = self._sum_x / N
+        self._stds = np.sqrt(1.0/(N - 1) * (self._sum_sq_x - 2.0 * self._sum_x * self._means + N * self._means**2))
+        self._stds[self._stds < eps] = eps
+        return self
