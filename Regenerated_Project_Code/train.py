@@ -49,6 +49,7 @@ def build_argparser():
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--save_dir", type=str, default="trained_models")
     p.add_argument("--results_dir", type=str, default="results")
+    p.add_argument("--cache_dir", type=str, default="data/normalized_data_cache_train", help="Path to normalized NPZ cache (e.g., data/normalized_data_cache_train or _all)")
     p.add_argument("--timestep", type=float, default=0.8)
     p.add_argument("--append_masks", action="store_true",
                    help="Append binary masks to values in discretizer (2F features).")
@@ -434,6 +435,12 @@ def print_thresholded_report(yt_true, yt_prob, thr, header="📊 Test"):
 
 def main():
     args = build_argparser().parse_args()
+
+    # override cache folder via CLI
+    global CACHE_DIR, NORM_STATS
+    CACHE_DIR = args.cache_dir
+    NORM_STATS = os.path.join(CACHE_DIR, "np_norm_stats.npz")
+
     set_seed(42)
 
     metric_fn, metric_source = select_metric_fn(args.papers_metrics_mode)
