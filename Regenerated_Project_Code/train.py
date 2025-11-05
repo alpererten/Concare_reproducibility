@@ -49,7 +49,8 @@ def build_argparser():
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--save_dir", type=str, default="trained_models")
     p.add_argument("--results_dir", type=str, default="results")
-    p.add_argument("--cache_dir", type=str, default="data/normalized_data_cache_train", help="Path to normalized NPZ cache (e.g., data/normalized_data_cache_train or _all)")
+    p.add_argument("--cache_dir", type=str, default="data/normalized_data_cache_train",
+                   help="Path to normalized NPZ cache (e.g., data/normalized_data_cache_train or _all)")
     p.add_argument("--timestep", type=float, default=0.8)
     p.add_argument("--append_masks", action="store_true",
                    help="Append binary masks to values in discretizer (2F features).")
@@ -195,24 +196,44 @@ def _materialize_authors_parity(args):
         np.savez_compressed(NORM_STATS, means=np.array([0.0], dtype=np.float32), stds=np.array([1.0], dtype=np.float32))
 
 
-def _ensure_materialized_default(timestep: float, append_masks: bool):
+# ---- NEW helper: infer scope name from --cache_dir ----
+def _infer_scope_from_cache_dir(path: str) -> str:
+    name = os.path.basename(os.path.normpath(path))
+    # expected format: normalized_data_cache_{scope}
+    if name.startswith("normalized_data_cache_") and len(name) > len("normalized_data_cache_"):
+        return name.replace("normalized_data_cache_", "", 1)
+    return "train"
+
+
+def _ensure_materialized_default(timestep: float, append_masks: bool, cache_dir: str):
     """
-    Ensure normalized NPZs + stats exist in data/normalized_data_cache/.
-    If not present, call our default materializer which writes to that directory.
+    Ensure normalized NPZs + stats exist under the selected cache_dir.
+    If not present, call our default materializer which writes to that directory/scope.
     """
-    os.makedirs(CACHE_DIR, exist_ok=True)
+    os.makedirs(cache_dir, exist_ok=True)
+    scope = _infer_scope_from_cache_dir(cache_dir)
+
+    # Accept either plain or scoped stats filenames
+    stats_plain = os.path.join(cache_dir, "np_norm_stats.npz")
+    stats_scoped = os.path.join(cache_dir, f"np_norm_stats_{scope}.npz")
+
     need = (
-        not os.path.exists(os.path.join(CACHE_DIR, "train.npz")) or
-        not os.path.exists(os.path.join(CACHE_DIR, "val.npz")) or
-        not os.path.exists(os.path.join(CACHE_DIR, "test.npz")) or
-        not os.path.exists(NORM_STATS)
+        not os.path.exists(os.path.join(cache_dir, "train.npz")) or
+        not os.path.exists(os.path.join(cache_dir, "val.npz")) or
+        not os.path.exists(os.path.join(cache_dir, "test.npz")) or
+        not (os.path.exists(stats_plain) or os.path.exists(stats_scoped))
     )
     if need:
         from materialize_ram import materialize_split
         for sp in ["train", "val", "test"]:
-            materialize_split(sp, timestep=timestep, append_masks=append_masks)
+            materialize_split(
+                sp,
+                timestep=timestep,
+                append_masks=append_masks,
+                norm_scope=scope,  # key: write/read in the scope matching --cache_dir
+            )
     else:
-        print(f"[INFO] Using existing normalized cache in {CACHE_DIR}")
+        print(f"[INFO] Using existing normalized cache in {cache_dir}")
 
 
 def _ensure_materialized(args):
@@ -233,7 +254,7 @@ def _ensure_materialized(args):
         print("[INFO] Parity mode ON — building cache with authors' pipeline")
         _materialize_authors_parity(args)
     else:
-        _ensure_materialized_default(args.timestep, args.append_masks)
+        _ensure_materialized_default(args.timestep, args.append_masks, args.cache_dir)
 
 
 def _choose_workers():
@@ -253,7 +274,7 @@ def make_model(input_dim, device, use_compile=False):
         hidden_dim=64,
         d_model=64,
         MHD_num_head=4,
-        d_ff=128,
+        d_ff=256,
         output_dim=1,
         keep_prob=0.5,
         demographic_dim=12,
