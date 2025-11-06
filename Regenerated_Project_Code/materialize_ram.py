@@ -6,8 +6,8 @@ import numpy as np
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
-from authors_modules.preprocessing import Discretizer, Normalizer
-from authors_modules.readers import InHospitalMortalityReader as IHMReader
+from data_processing import Discretizer, Normalizer
+from data_processing import InHospitalMortalityReader as IHMReader
 
 
 def _cache_dir(scope: str) -> Path:
