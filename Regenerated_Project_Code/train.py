@@ -15,7 +15,9 @@ import torch
 from torch.utils.data import DataLoader
 from torch import amp
 from datetime import datetime
-from helpers import set_seed
+from train_helpers import RAMDataset, pad_collate as ram_pad_collate
+from train_helpers import set_seed
+
 
 # ---- Metrics selection ----
 # Our local metrics (threshold-free AUROC/AUPRC and extras)
@@ -52,7 +54,7 @@ def build_argparser():
     p.add_argument("--cache_dir", type=str, default="data/normalized_data_cache_train",
                    help="Path to normalized NPZ cache (e.g., data/normalized_data_cache_train or _all)")
     p.add_argument("--timestep", type=float, default=0.8)
-    p.add_argument("--append_masks", action="store_true",
+    p.add_argument("--append_masks", action="store_true", default=True,
                    help="Append binary masks to values in discretizer (2F features).")
     p.add_argument("--diag", action="store_true", help="Run preflight diagnostics before training")
     p.add_argument("--compile", action="store_true", help="Enable torch.compile if Triton is available")
@@ -454,6 +456,9 @@ def print_thresholded_report(yt_true, yt_prob, thr, header="📊 Test"):
     return acc, prec, rec, f1
 
 
+
+
+
 def main():
     args = build_argparser().parse_args()
 
@@ -474,7 +479,7 @@ def main():
     print("\n[INFO] Preparing RAM datasets")
     _ensure_materialized(args)
 
-    from ram_dataset import RAMDataset, pad_collate as ram_pad_collate
+
     train_ds = RAMDataset("train", cache_dir=CACHE_DIR)
     val_ds   = RAMDataset("val",   cache_dir=CACHE_DIR)
     test_ds  = RAMDataset("test",  cache_dir=CACHE_DIR)
