@@ -54,7 +54,7 @@ def build_argparser():
     p.add_argument("--cache_dir", type=str, default="data/normalized_data_cache_train",
                    help="Path to normalized NPZ cache (e.g., data/normalized_data_cache_train or _all)")
     p.add_argument("--timestep", type=float, default=0.8)
-    p.add_argument("--append_masks", action="store_true",
+    p.add_argument("--append_masks", action="store_true", default=True,
                    help="Append binary masks to values in discretizer (2F features).")
     p.add_argument("--diag", action="store_true", help="Run preflight diagnostics before training")
     p.add_argument("--compile", action="store_true", help="Enable torch.compile if Triton is available")

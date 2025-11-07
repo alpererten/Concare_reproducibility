@@ -1,0 +1,6 @@
+=== ConCare Training Log Started (2025-11-06_17-39-49) ===
+epochs=100  batch_size=256  lr=0.001  weight_decay=0.0  lambda_decov=0.0001  amp=False  compile=False
+input_dim=76  timestep=1.0  append_masks=False
+
+New best model at epoch 1: val AUPRC=0.3303, AUROC=0.7410, loss=0.3933, thr=0.13, F1=0.3160, P=0.1955, R=0.8234
+[AUTHORS] acc=0.8647 auroc=0.7410 auprc=0.3288 minpse=0.3773 f1=0.0000
