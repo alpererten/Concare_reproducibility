@@ -11,3 +11,12 @@ Interpretation:
 
 - The authors keep a `PositionalEncoding` module (even though it is not used later), while the regenerated model omits it entirely.
 - Our reproduction swaps the generic `SingleAttention` class for a specialized `SingleAttentionPerFeatureNew` implementation. The new module handles time decay internally and therefore does not expose the `time_aware` flag, which shows up as `False` in the comparison.
+
+## Forward & Training Smoke Tests
+
+Small synthetic experiments (batch=4, 48 time steps, paper hyper-parameters) highlight the runtime differences:
+
+- forward_mean_abs_diff (B=4,T=48 synthetic batch): 0.028644
+- training_loss (3 steps, lr=1e-3 on synthetic batch): authors_initial=0.726901, authors_final=0.700444; regen_initial=0.695841, regen_final=0.679561
+
+Both models produce valid probabilities and their losses decrease over a few optimization steps, but the regenerated model consistently yields slightly lower loss on this toy batch.
