@@ -6,6 +6,7 @@ Loads normalized NPZs from data/normalized_data_cache/
 import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
+import torch.nn.functional as F
 import argparse
 import glob
 import shutil
@@ -79,6 +80,32 @@ def build_argparser():
     # --------------------------------------------------------------
 
     return p
+
+
+class AsymmetricFocalBCELoss(torch.nn.Module):
+    """
+    Probabilities in [0,1], not logits.
+    gamma_pos emphasizes hard positives.
+    gamma_neg emphasizes hard negatives but is often larger.
+    """
+    def __init__(self, gamma_pos: float = 0.0, gamma_neg: float = 2.0, eps: float = 1e-7):
+        super().__init__()
+        self.gp = gamma_pos
+        self.gn = gamma_neg
+        self.eps = eps
+
+    def forward(self, p, y):
+        # clamp for numerical safety
+        p = torch.clamp(p, self.eps, 1.0 - self.eps)
+        y = y.float()
+        # standard BCE parts
+        loss_pos = -y * torch.log(p)
+        loss_neg = -(1.0 - y) * torch.log(1.0 - p)
+        # focal modulating factors
+        mod_pos = (1.0 - p) ** self.gp
+        mod_neg = p ** self.gn
+        loss = mod_pos * loss_pos + mod_neg * loss_neg
+        return loss.mean()
 
 
 def _assemble_from_cases(case_dir: Path, out_path: Path):
@@ -372,6 +399,21 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
     probs, labels = [], []
     for batch_idx, (X, D, y) in enumerate(loader):
         X, D, y = X.to(device, non_blocking=True), D.to(device, non_blocking=True), y.to(device, non_blocking=True)
+
+        # === Temporal cutout regularization ===
+        # Applies only during training. Ten percent chance to mask a short window.
+        # You can tweak prob and frac if you like.
+        if model.training:
+            B, T, F = X.shape
+            apply = (T > 4) and (torch.rand(1, device=X.device).item() < 0.10)
+            if apply:
+                win = max(1, int(0.10 * T))
+                start = torch.randint(0, T - win + 1, (1,), device=X.device).item()
+                # work on a clone to avoid surprising in place issues
+                X = X.clone()
+                X[:, start:start + win, :] = 0.0
+        # === end temporal cutout ===
+
         optimizer.zero_grad(set_to_none=True)
         if scaler:
             with amp.autocast("cuda", dtype=torch.bfloat16):
@@ -420,6 +462,7 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
     m = metric_fn(y_true, y_prob)
     m["loss"] = total_loss / len(loader.dataset)
     return m
+
 
 
 @torch.no_grad()
@@ -503,7 +546,8 @@ def main():
     model = make_model(input_dim, args.device, use_compile=args.compile)
 
     # ---- Unweighted BCE on probabilities ----
-    criterion = torch.nn.BCELoss()
+    #criterion = torch.nn.BCELoss()
+    criterion = AsymmetricFocalBCELoss(gamma_pos=0.0, gamma_neg=2.0)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = amp.GradScaler("cuda") if args.amp and "cuda" in args.device else None
 
