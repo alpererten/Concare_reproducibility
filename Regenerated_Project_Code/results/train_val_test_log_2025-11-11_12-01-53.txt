@@ -1,0 +1,4 @@
+=== ConCare Training Log Started (2025-11-11_12-01-53) ===
+epochs=50  batch_size=32  lr=0.001  weight_decay=0.0  lambda_decov=0.0001  amp=False  compile=False
+input_dim=76  timestep=0.8  append_masks=True
+

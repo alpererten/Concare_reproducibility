@@ -78,26 +78,32 @@ def build_argparser():
                    help="Path to authors' TEST listfile.csv")
     # --------------------------------------------------------------
 
+    # ---- NEW: attention-capture utilities ----
+    p.add_argument("--load_ckpt", type=str, default=None,
+                   help="Path to checkpoint to load before training/eval")
+    p.add_argument("--dump_feature_attn", type=str, default=None,
+                   help="If set, run a single eval on VAL, save [H,N,N] attention to this .npy, and exit")
+
     return p
 
 
 def _assemble_from_cases(case_dir: Path, out_path: Path):
     """
     Assemble a split NPZ (X ragged, D 12-d rows or zeros, y) from per-stay .npz files
-    that contain at least X and y. Demographics are zeros here by design, since authors'
-    parity does not supply D.
+    written by materialize_parity() into a single RAMDataset-compatible file.
     """
-    files = sorted(case_dir.glob("*.npz"))
-    if len(files) == 0:
-        raise RuntimeError(f"No per-case NPZ files found in {case_dir}")
-    X_list, y_list, D_list = [], [], []
-    for f in files:
+    case_dir = Path(case_dir)
+    out_path = Path(out_path)
+    X_list, D_list, y_list = [], [], []
+    for f in sorted(case_dir.glob("*.npz")):
         z = np.load(f, allow_pickle=True)
-        X = z["X"].astype(np.float32)
-        y = float(z["y"])
+        X = z["X"]; y = z["y"].item(); D = z.get("D")
+        if D is None:
+            D_list.append(np.zeros((12,), dtype=np.float32))
+        else:
+            D_list.append(D.astype(np.float32))
         X_list.append(X)
         y_list.append(np.float32(y))
-        D_list.append(np.zeros((12,), dtype=np.float32))  # parity does not add demographics
     np.savez_compressed(
         out_path,
         X=np.array(X_list, dtype=object),
@@ -129,15 +135,6 @@ def _materialize_authors_parity(args):
                     pass
         else:
             p.mkdir(parents=True, exist_ok=True)
-
-    # Helper to sweep fresh per-stay NPZs into a split folder
-    def _sweep_cases(target_dir: Path):
-        fresh = sorted(Path(CACHE_DIR).glob("*.npz"))
-        for f in fresh:
-            # Skip previously assembled split npz names
-            if f.name in ("train.npz", "val.npz", "test.npz", "np_norm_stats.npz"):
-                continue
-            shutil.move(str(f), str(target_dir))
 
     # Train split
     written_tr = materialize_parity(
@@ -214,11 +211,8 @@ def _ensure_materialized_default(timestep: float, append_masks: bool, cache_dir:
     """
     os.makedirs(cache_dir, exist_ok=True)
     scope = _infer_scope_from_cache_dir(cache_dir)
-
-    # Accept either plain or scoped stats filenames
-    stats_plain = os.path.join(cache_dir, "np_norm_stats.npz")
-    stats_scoped = os.path.join(cache_dir, f"np_norm_stats_{scope}.npz")
-
+    stats_scoped = os.path.join("data", f"np_norm_stats_{scope}.npz")
+    stats_plain = os.path.join("data", "np_norm_stats.npz")
     need = (
         not os.path.exists(os.path.join(cache_dir, "train.npz")) or
         not os.path.exists(os.path.join(cache_dir, "val.npz")) or
@@ -253,7 +247,6 @@ def _ensure_materialized(args):
                              "--parity_train_dir --parity_train_listfile "
                              "--parity_val_dir --parity_val_listfile "
                              "--parity_test_dir --parity_test_listfile")
-        print("[INFO] Parity mode ON — building cache with authors' pipeline")
         _materialize_authors_parity(args)
     else:
         _ensure_materialized_default(args.timestep, args.append_masks, args.cache_dir)
@@ -300,9 +293,7 @@ def tensor_stats(name, t):
     finite = torch.isfinite(t_cpu)
     pct_finite = finite.float().mean().item() * 100.0
     msg = f"{name}: shape={tuple(t_cpu.shape)} finite={pct_finite:.2f}%"
-    if pct_finite > 0:
-        msg += f" min={t_cpu[finite].min().item():.4f} max={t_cpu[finite].max().item():.4f} mean={t_cpu[finite].mean().item():.4f}"
-    print("[DIAG]", msg)
+    print(msg)
 
 
 def diag_preflight(train_ds, device, collate_fn):
@@ -336,15 +327,16 @@ def _sanitize_decov(decov_tensor: torch.Tensor):
 def best_threshold_from_probs(y_true, y_prob):
     """Grid search thresholds to maximize F1 for the positive class."""
     y_true = y_true.astype(np.float32)
+    y_prob = y_prob.astype(np.float32)
     best = (0.5, 0.0, 0.0, 0.0)
-    for t in np.linspace(0.01, 0.99, 99):
-        y_pred = (y_prob >= t).astype(np.int32)
-        tp = np.sum((y_pred == 1) & (y_true == 1))
-        fp = np.sum((y_pred == 1) & (y_true == 0))
-        fn = np.sum((y_pred == 0) & (y_true == 1))
-        prec = tp / max(tp + fp, 1)
-        rec  = tp / max(tp + fn, 1)
-        f1 = 0.0 if (prec + rec) == 0.0 else 2 * prec * rec / (prec + rec)
+    for t in np.linspace(0.0, 1.0, 201):
+        yhat = (y_prob >= t).astype(np.float32)
+        tp = float((yhat * y_true).sum())
+        fp = float((yhat * (1.0 - y_true)).sum())
+        fn = float(((1.0 - yhat) * y_true).sum())
+        prec = tp / (tp + fp + 1e-9)
+        rec = tp / (tp + fn + 1e-9)
+        f1 = 0.0 if (prec + rec) < 1e-9 else 2 * prec * rec / (prec + rec)
         if f1 > best[1]:
             best = (float(t), float(f1), float(prec), float(rec))
     return best
@@ -408,13 +400,9 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-
         total_loss += loss.item() * X.size(0)
         probs.append(logits.detach().to(torch.float32).cpu().numpy())
         labels.append(y.detach().to(torch.float32).cpu().numpy())
-        if batch_idx == 0:
-            print(f"[DIAG] Epoch {epoch} batch {batch_idx} decov={float(decov):.6f} bce={float(bce):.6f}")
-
     y_true = np.concatenate(labels).ravel()
     y_prob = np.concatenate(probs).ravel()
     m = metric_fn(y_true, y_prob)
@@ -444,18 +432,20 @@ def evaluate(model, loader, device, criterion, metric_fn):
 
 def print_thresholded_report(yt_true, yt_prob, thr, header="📊 Test"):
     yhat = (yt_prob >= thr).astype(np.int32)
-    tp = int(((yhat == 1) & (yt_true == 1)).sum())
-    fp = int(((yhat == 1) & (yt_true == 0)).sum())
-    tn = int(((yhat == 0) & (yt_true == 0)).sum())
-    fn = int(((yhat == 0) & (yt_true == 1)).sum())
-    prec = tp / max(tp + fp, 1)
-    rec  = tp / max(tp + fn, 1)
-    f1   = 0.0 if (prec + rec) == 0.0 else 2 * prec * rec / (prec + rec)
-    acc  = (tp + tn) / max(tp + tn + fp + fn, 1)
-    print(f"\n{header} @thr={thr:.2f}  acc={acc:.4f}  P={prec:.4f}  R={rec:.4f}  F1={f1:.4f}")
+    tp = float(((yhat == 1) & (yt_true == 1)).sum())
+    tn = float(((yhat == 0) & (yt_true == 0)).sum())
+    fp = float(((yhat == 1) & (yt_true == 0)).sum())
+    fn = float(((yhat == 0) & (yt_true == 1)).sum())
+    acc = (tp + tn) / max(tp + tn + fp + fn, 1.0)
+    prec = tp / max(tp + fp, 1e-9)
+    rec = tp / max(tp + fn, 1e-9)
+    f1 = 0.0 if (prec + rec) < 1e-9 else 2 * prec * rec / (prec + rec)
+    print(f"\n{header}")
+    print(f"     acc: {acc:.4f}")
+    print(f"     pre: {prec:.4f}")
+    print(f"     rec: {rec:.4f}")
+    print(f"      f1: {f1:.4f}")
     return acc, prec, rec, f1
-
-
 
 
 
@@ -479,7 +469,6 @@ def main():
     print("\n[INFO] Preparing RAM datasets")
     _ensure_materialized(args)
 
-
     train_ds = RAMDataset("train", cache_dir=CACHE_DIR)
     val_ds   = RAMDataset("val",   cache_dir=CACHE_DIR)
     test_ds  = RAMDataset("test",  cache_dir=CACHE_DIR)
@@ -502,6 +491,16 @@ def main():
 
     model = make_model(input_dim, args.device, use_compile=args.compile)
 
+    # Optionally load existing checkpoint weights
+    if args.load_ckpt is not None and os.path.exists(args.load_ckpt):
+        try:
+            ckpt_obj = torch.load(args.load_ckpt, map_location=args.device)
+            state = ckpt_obj.get("model", ckpt_obj)
+            model.load_state_dict(state, strict=False)
+            print(f"[INFO] Loaded checkpoint weights from {args.load_ckpt}")
+        except Exception as e:
+            print(f"[WARN] Failed to load checkpoint {args.load_ckpt}: {e}")
+
     # ---- Unweighted BCE on probabilities ----
     criterion = torch.nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -522,7 +521,6 @@ def main():
                 f"lambda_decov={args.lambda_decov}  amp={args.amp}  compile={args.compile}\n")
         f.write(f"input_dim={input_dim}  timestep={args.timestep}  append_masks={args.append_masks}\n\n")
 
-    # decov warmup
     target_lambda = args.lambda_decov
     warmup_epochs = 10
 
@@ -533,6 +531,48 @@ def main():
     print(f"   Using AMP: {args.amp}")
     print(f"   Using torch.compile: {args.compile}")
     print(f"   Metrics source: {metric_source}{' (papers_metrics_mode ON)' if args.papers_metrics_mode else ''}\n")
+
+    # --- Optional: dump feature attention and exit ---
+    if args.dump_feature_attn is not None:
+        # Prefer the attention submodule if present
+        attn_mod = getattr(model, "MultiHeadedAttention", None)
+
+        # Reset capture buffers (model-level or submodule-level)
+        try:
+            if attn_mod is not None and hasattr(attn_mod, "reset_attn_capture"):
+                attn_mod.reset_attn_capture()
+            else:
+                getattr(model, "reset_attn_capture", lambda: None)()
+        except Exception:
+            pass
+
+        # Run a single validation pass to populate attention captures
+        _ = evaluate(model, val_loader, args.device, criterion, metric_fn)
+
+        # Retrieve the averaged [H,N,N] attention
+        A = None
+        if attn_mod is not None:
+            if hasattr(attn_mod, "get_captured_attn"):
+                A = attn_mod.get_captured_attn()
+            elif hasattr(attn_mod, "saved_attn_avg") and getattr(attn_mod, "saved_attn_avg").numel() > 0:
+                A = attn_mod.saved_attn_avg
+        # Fallbacks (older capture styles)
+        if A is None and hasattr(model, "get_captured_attn"):
+            A = model.get_captured_attn()
+        if A is None and attn_mod is not None and hasattr(attn_mod, "_attn_batches"):
+            import torch as _torch
+            batches = attn_mod._attn_batches
+            if isinstance(batches, (list, tuple)) and len(batches):
+                A = _torch.cat(batches, dim=0).mean(dim=0)
+
+        if A is None:
+            raise RuntimeError("No attention captured; ensure model.MultiHeadedAttention records attention during eval.")
+
+        A_np = A.detach().cpu().numpy()
+        os.makedirs(os.path.dirname(args.dump_feature_attn) or ".", exist_ok=True)
+        np.save(args.dump_feature_attn, A_np)
+        print(f"[SAVE] {args.dump_feature_attn}  shape={A_np.shape}  min={A_np.min():.6g}  max={A_np.max():.6g}")
+        return
 
     for epoch in range(1, args.epochs + 1):
         lambda_decov = target_lambda * (epoch / warmup_epochs) if epoch <= warmup_epochs else target_lambda
@@ -580,10 +620,9 @@ def main():
     if ours_minpse is not None:
         try:
             mp = ours_minpse(yt_true, yt_prob)
-            test_metrics = dict(test_metrics)
             test_metrics.update({
                 "minpse": mp.get("minpse", float("nan")),
-                "minpse_thr": mp.get("best_thr", float("nan")),
+                "minpse_thr": mp.get("thr", float("nan")),
                 "minpse_prec": mp.get("precision", float("nan")),
                 "minpse_rec": mp.get("recall", float("nan")),
             })
@@ -644,10 +683,10 @@ def main():
                 f.write(f"{k:>8}: {v}\n")
         f.write("\n-- authors-style @best_val_thr --\n")
         f.write(f"acc={acc_best:.4f}  f1={f1_best:.4f}  auroc={test_metrics.get('auroc', float('nan')):.4f}  "
-                f"auprc={test_metrics.get('auprc', float('nan')):.4f}  minpse={minpse_best:.4f}  thr_used={best_thr:.2f}\n")
+                f"auprc={test_metrics.get('auprc', float('nan')):.4f}  minpse={minpse_best:.4f}\n")
         if authors_print_metrics_binary is not None:
-            f.write("\n=== AUTHORS-STYLE TEST METRICS ===\n")
-            for k in ["acc","auroc","auprc","minpse","f1_score","prec0","prec1","rec0","rec1"]:
+            f.write("[AUTHORS] ")
+            for k in ["acc", "auroc", "auprc", "minpse", "f1_score"]:
                 try:
                     f.write(f"{k}={authors_test[k]:.6f}\n")
                 except Exception:

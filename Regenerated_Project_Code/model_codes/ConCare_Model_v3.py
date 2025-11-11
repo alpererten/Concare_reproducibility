@@ -112,13 +112,15 @@ class FinalAttentionQKV(nn.Module):
 
 class MultiHeadedAttention(nn.Module):
     """
-    Multi-head self-attention with DeCov regularization.
-
-    *Revision*: during eval, we collect POST-SOFTMAX per-batch attention matrices
-    (before dropout) in `self._attn_batches` so the caller can average across patients
-    and reproduce the paper-style cross-feature heatmaps.
+    Multi-head self-attention with:
+      • post-softmax attention capture (for plotting)
+      • optional DeCov loss computation (unchanged)
+      • temperature sharpening (τ < 1.0 -> peakier attention)
+      • separate dropout on attention weights (attn_dropout)
     """
-    def __init__(self, d_model, num_heads, dropout=0.1):
+    def __init__(self, d_model, num_heads, dropout=0.1,
+                 attn_temperature: float = 1.0,
+                 attn_dropout: float = 0.0):
         super().__init__()
         assert d_model % num_heads == 0
         self.num_heads = num_heads
@@ -129,58 +131,90 @@ class MultiHeadedAttention(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model)
         self.o_proj = nn.Linear(d_model, d_model)
 
+        # standard residual/FFN dropout (unchanged)
         self.dropout = nn.Dropout(p=dropout)
 
-        # Running average buffers kept for backward compatibility
-        self.register_buffer("saved_attn_avg", torch.zeros(0))            # will become [H, N, N]
-        self.register_buffer("saved_attn_count", torch.zeros((), dtype=torch.float32))
+        # NEW: temperature (<1.0 => sharper softmax)
+        self.tau = float(attn_temperature)
 
-        # NEW: hold raw per-batch attentions during evaluation
-        self._attn_batches = []  # list of [B, H, N, N] tensors on CPU
+        # NEW: dropout applied to attention weights themselves
+        self.attn_dropout = nn.Dropout(p=attn_dropout)
 
+        # running attention capture (initialized lazily on first forward)
+        self.register_buffer("saved_attn_avg", torch.tensor([]), persistent=False)
+        self.register_buffer("saved_attn_count", torch.tensor(0.0), persistent=False)
+
+    # --- utilities for the plotting path ---
+    @torch.no_grad()
+    def reset_attn_capture(self):
+        self.saved_attn_avg = torch.tensor([], device=self.saved_attn_count.device)
+        self.saved_attn_count = torch.tensor(0.0, device=self.saved_attn_count.device)
+
+    @torch.no_grad()
+    def get_captured_attn(self):
+        """
+        Returns [H, N, N] averaged across all forward passes so far
+        (batch/time already averaged inside forward).
+        """
+        if self.saved_attn_avg.numel() == 0:
+            return None
+        return self.saved_attn_avg
+
+    # ---------------- core forward ----------------
     def forward(self, query, key, value, mask=None):
-        B = query.size(0)
-        N = query.size(1)
+        """
+        query/key/value: [B, N, d_model], mask: [B, 1, N, N] or None
+        Returns:
+          x: [B, N, d_model], decov_loss: scalar tensor (may be 0.0)
+        """
+        B, N, _ = query.size()
 
-        q = self.q_proj(query).view(B, N, self.num_heads, self.d_k).transpose(1, 2)
-        k = self.k_proj(key).view(B, N, self.num_heads, self.d_k).transpose(1, 2)
-        v = self.v_proj(value).view(B, N, self.num_heads, self.d_k).transpose(1, 2)
+        # project and split heads
+        q = self.q_proj(query).view(B, N, self.num_heads, self.d_k).transpose(1, 2)  # [B,H,N,d_k]
+        k = self.k_proj(key  ).view(B, N, self.num_heads, self.d_k).transpose(1, 2)  # [B,H,N,d_k]
+        v = self.v_proj(value).view(B, N, self.num_heads, self.d_k).transpose(1, 2)  # [B,H,N,d_k]
 
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
+        # scaled dot-product scores
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)          # [B,H,N,N]
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e9)
 
-        p_attn = F.softmax(scores, dim=-1)  # [B, H, N, N]
+        # NEW: temperature sharpening
+        if self.tau != 1.0:
+            scores = scores / self.tau
 
-        # NEW: capture per-batch attention BEFORE dropout when evaluating
-        if not self.training:
-            self._attn_batches.append(p_attn.detach().cpu())
+        # attention weights
+        p_attn = F.softmax(scores, dim=-1)                                           # [B,H,N,N]
 
-        # Keep the historical running mean as before (pre-dropout)
+        # ---- capture post-softmax attention (average over batch) ----
         with torch.no_grad():
-            cur = p_attn.detach().mean(dim=0)  # [H, N, N] average over batch
+            cur = p_attn.detach().mean(dim=0)                                        # [H,N,N]
             if self.saved_attn_avg.numel() == 0:
                 self.saved_attn_avg = cur.clone()
+                self.saved_attn_count = torch.tensor(1.0, device=cur.device)
             else:
                 self.saved_attn_avg = (self.saved_attn_avg * self.saved_attn_count + cur) / (self.saved_attn_count + 1.0)
-            self.saved_attn_count += 1.0
+                self.saved_attn_count = self.saved_attn_count + 1.0
 
-        # Apply dropout AFTER saving attention
-        p_attn = self.dropout(p_attn)
+        # (optional) dropout on attention weights, then residual dropout as before
+        if self.attn_dropout.p > 0:
+            p_attn = self.attn_dropout(p_attn)
 
-        x = torch.matmul(p_attn, v)  # [B, H, N, d_k]
-        x = x.transpose(1, 2).contiguous().view(B, N, self.num_heads * self.d_k)
-        x = self.o_proj(x)  # [B, N, d_model]
+        # output
+        x = torch.matmul(p_attn, v)                                                  # [B,H,N,d_k]
+        x = x.transpose(1, 2).contiguous().view(B, N, self.num_heads * self.d_k)     # [B,N,d_model]
+        x = self.o_proj(x)                                                           # [B,N,d_model]
 
-        # DeCov regularization across features
-        decov_loss = 0.0
-        contexts = x.transpose(0, 1).transpose(1, 2)  # [N, d_model, B]
-        for i in range(N):
-            feats = contexts[i, :, :]  # [d_model, B]
-            mean = feats.mean(dim=1, keepdim=True)
-            centered = feats - mean
-            cov = (1.0 / (B - 1)) * torch.matmul(centered, centered.t())
-            decov_loss += 0.5 * (torch.norm(cov, p='fro') ** 2 - torch.norm(torch.diag(cov)) ** 2)
+        # DeCov regularization across features (unchanged)
+        # compute covariance of per-feature contexts across the batch
+        decov_loss = torch.tensor(0.0, device=x.device)
+        if B > 1:
+            contexts = x.transpose(0, 1).transpose(1, 2)  # [N, d_model, B]
+            for i in range(N):
+                feats = contexts[i, :, :]                 # [d_model, B]
+                feats = feats - feats.mean(dim=1, keepdim=True)
+                cov = (1.0 / (B - 1)) * torch.matmul(feats, feats.t())
+                decov_loss = decov_loss + 0.5 * (torch.norm(cov, p='fro') ** 2 - torch.norm(torch.diag(cov)) ** 2)
 
         return x, decov_loss
 
@@ -257,7 +291,13 @@ class ConCare(nn.Module):
         self.demo_proj = nn.Linear(self.demographic_dim, self.hidden_dim)  # kept for parity with authors
 
         # Multi-head attention over feature embeddings
-        self.MultiHeadedAttention = MultiHeadedAttention(self.d_model, self.MHD_num_head, dropout=0.1)
+        self.MultiHeadedAttention = MultiHeadedAttention(
+        d_model=self.d_model,
+        num_heads=self.MHD_num_head,
+        dropout=1.0 - self.keep_prob,
+        attn_temperature=0.7,   # <— sharpen attention (you can try 0.6–0.8)
+        attn_dropout=0.0        # <— disable attn weight dropout during fine-tune
+        )
 
         # One SublayerConnection used twice
         self.SublayerConnection = SublayerConnection(self.d_model, dropout=1 - self.keep_prob)
