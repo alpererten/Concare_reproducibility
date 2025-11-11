@@ -229,27 +229,40 @@ def load_ckpt(path: str) -> Dict[str, torch.Tensor]:
     else:
         raise RuntimeError("Unsupported checkpoint format")
 
+
 def extract_betas(state_dict: Dict[str, torch.Tensor]) -> np.ndarray:
     """
-    β comes from LastStepAttentions[i].rate (scalar tensors).
-    We collect them in index order.
+    Read raw LastStepAttentions[i].rate scalars from the state_dict and
+    convert them to effective decay rates using a positive activation.
+
+    We use softplus so β > 0, matching how decay rates are used in the model.
     """
     idx, vals = [], []
     for k, v in state_dict.items():
         if isinstance(v, torch.Tensor) and v.numel() == 1 and k.endswith(".rate"):
             parts = k.split(".")
-            # Expect ... LastStepAttentions.<idx>.rate
             try:
                 if "LastStepAttentions" in parts:
                     i = parts.index("LastStepAttentions")
-                    j = int(parts[i+1])
-                    idx.append(j); vals.append(float(v.detach().cpu().item()))
+                    j = int(parts[i + 1])
+
+                    raw = float(v.detach().cpu().item())
+                    # ---- key fix: apply positive activation to get the *real* β ----
+                    beta = np.log1p(np.exp(raw))   # softplus
+                    # If your ConCare variant uses sigmoid, use this instead:
+                    # beta = 1.0 / (1.0 + np.exp(-raw))
+
+                    idx.append(j)
+                    vals.append(beta)
             except Exception:
                 continue
+
     if not idx:
         raise RuntimeError("No β (.rate) scalars found in state_dict")
+
     order = np.argsort(idx)
     return np.array([vals[i] for i in order], dtype=float)
+
 
 def extract_saved_attention_matrix(state_dict: Dict[str, torch.Tensor], head: int) -> np.ndarray:
     """
@@ -325,24 +338,68 @@ def percentile_limits(arrays: List[np.ndarray], pmin: float, pmax: float,
 
 # ------------------------- plotting -------------------------
 
+
+from matplotlib.colors import ListedColormap, BoundaryNorm
+from matplotlib.colorbar import ColorbarBase
+
 def plot_decay_strip(beta: np.ndarray, features: List[str], outdir: str) -> str:
+    # Sort by descending beta values
     order = np.argsort(-beta)
     b = beta[order]
     labels = short_labels([features[i] for i in order])
 
     vmin, vmax = float(np.nanmin(b)), float(np.nanmax(b))
-    fig = plt.figure(figsize=(14, 3.0))
-    ax = fig.add_subplot(111)
-    img = ax.imshow(b.reshape(1, -1), aspect="auto", vmin=vmin, vmax=vmax, cmap="Blues")
-    ax.set_yticks([0]); ax.set_yticklabels(["Decay_Rates"])
-    ax.set_xticks(range(len(labels))); ax.set_xticklabels(labels, rotation=45, ha="right")
-    ax.set_title("Decay Rates For Different Features")
-    cbar = fig.colorbar(img, ax=ax, orientation="horizontal", fraction=0.04, pad=0.15)
-    cbar.set_label("β", rotation=0, labelpad=10, ha="left")
-    fig.tight_layout()
+
+    # Discrete 5-level color map
+    base_cmap = plt.cm.Blues
+    cmap5 = ListedColormap(base_cmap(np.linspace(0.2, 0.95, 5)))
+    levels = np.linspace(vmin, vmax, 6)
+    norm5 = BoundaryNorm(levels, cmap5.N, clip=True)
+
+    # Figure setup
+    fig, ax = plt.subplots(figsize=(5, 1.6))
+    img = ax.imshow(b.reshape(1, -1), aspect=0.4, cmap=cmap5, norm=norm5, interpolation="nearest")
+
+    # Labeling — make Decay_Rates close and vertical
+    ax.set_yticks([0])
+    ax.set_yticklabels(["Decay_Rates"], fontsize=11, rotation=45, va="center")
+    ax.tick_params(axis='y', pad=-10, length=0)  # move even closer, no tick line
+    ax.margins(y=0)  # remove extra y padding
+
+    # Align tightly to image (eliminate internal white margin)
+    ax.set_ylim(0.5, -0.5)
+
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=10)
+    ax.set_title("Decay Rate For Different Features", fontsize=12, pad=10)
+
+    # Centered, small colorbar (≈1/3 width, below the strip)
+    fig.subplots_adjust(bottom=0.3)
+    bar_width = 0.35
+    bar_x = 0.4
+    bar_y = 0.08
+    bar_height = 0.05
+
+    cax = fig.add_axes([bar_x, bar_y, bar_width, bar_height])
+    cb = ColorbarBase(cax, cmap=cmap5, norm=norm5, boundaries=levels,
+                      orientation="horizontal", drawedges=True)
+
+    # Boxy ticks
+    tick_locs = 0.5 * (levels[:-1] + levels[1:])
+    cb.set_ticks(tick_locs)
+    cb.set_ticklabels([f"{x:.2f}" for x in tick_locs])
+    cb.set_label("β", fontsize=10, labelpad=3)
+    cb.ax.tick_params(labelsize=9)
+
+    # Save
     path = os.path.join(outdir, f"decay_rates_{ts()}.png")
-    fig.savefig(path, dpi=220); plt.close(fig)
+    fig.savefig(path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
     return path
+
+
+
+
 
 def plot_single_heatmap(M: np.ndarray, features: List[str], outdir: str,
                         title: str, vmin: float, vmax: float) -> str:

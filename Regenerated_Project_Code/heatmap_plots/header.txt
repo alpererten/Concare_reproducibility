@@ -1,0 +1,76 @@
+  0	Capillary refill rate->0.0
+  1	Capillary refill rate->1.0
+  2	Diastolic blood pressure
+  3	Fraction inspired oxygen
+  4	Glascow coma scale eye opening->To Pain
+  5	Glascow coma scale eye opening->3 To speech
+  6	Glascow coma scale eye opening->1 No Response
+  7	Glascow coma scale eye opening->4 Spontaneously
+  8	Glascow coma scale eye opening->None
+  9	Glascow coma scale eye opening->To Speech
+ 10	Glascow coma scale eye opening->Spontaneously
+ 11	Glascow coma scale eye opening->2 To pain
+ 12	Glascow coma scale motor response->1 No Response
+ 13	Glascow coma scale motor response->3 Abnorm flexion
+ 14	Glascow coma scale motor response->Abnormal extension
+ 15	Glascow coma scale motor response->No response
+ 16	Glascow coma scale motor response->4 Flex-withdraws
+ 17	Glascow coma scale motor response->Localizes Pain
+ 18	Glascow coma scale motor response->Flex-withdraws
+ 19	Glascow coma scale motor response->Obeys Commands
+ 20	Glascow coma scale motor response->Abnormal Flexion
+ 21	Glascow coma scale motor response->6 Obeys Commands
+ 22	Glascow coma scale motor response->5 Localizes Pain
+ 23	Glascow coma scale motor response->2 Abnorm extensn
+ 24	Glascow coma scale total->11
+ 25	Glascow coma scale total->10
+ 26	Glascow coma scale total->13
+ 27	Glascow coma scale total->12
+ 28	Glascow coma scale total->15
+ 29	Glascow coma scale total->14
+ 30	Glascow coma scale total->3
+ 31	Glascow coma scale total->5
+ 32	Glascow coma scale total->4
+ 33	Glascow coma scale total->7
+ 34	Glascow coma scale total->6
+ 35	Glascow coma scale total->9
+ 36	Glascow coma scale total->8
+ 37	Glascow coma scale verbal response->1 No Response
+ 38	Glascow coma scale verbal response->No Response
+ 39	Glascow coma scale verbal response->Confused
+ 40	Glascow coma scale verbal response->Inappropriate Words
+ 41	Glascow coma scale verbal response->Oriented
+ 42	Glascow coma scale verbal response->No Response-ETT
+ 43	Glascow coma scale verbal response->5 Oriented
+ 44	Glascow coma scale verbal response->Incomprehensible sounds
+ 45	Glascow coma scale verbal response->1.0 ET/Trach
+ 46	Glascow coma scale verbal response->4 Confused
+ 47	Glascow coma scale verbal response->2 Incomp sounds
+ 48	Glascow coma scale verbal response->3 Inapprop words
+ 49	Glucose
+ 50	Heart Rate
+ 51	Height
+ 52	Mean blood pressure
+ 53	Oxygen saturation
+ 54	Respiratory rate
+ 55	Systolic blood pressure
+ 56	Temperature
+ 57	Weight
+ 58	pH
+ 59	mask->Capillary refill rate
+ 60	mask->Diastolic blood pressure
+ 61	mask->Fraction inspired oxygen
+ 62	mask->Glascow coma scale eye opening
+ 63	mask->Glascow coma scale motor response
+ 64	mask->Glascow coma scale total
+ 65	mask->Glascow coma scale verbal response
+ 66	mask->Glucose
+ 67	mask->Heart Rate
+ 68	mask->Height
+ 69	mask->Mean blood pressure
+ 70	mask->Oxygen saturation
+ 71	mask->Respiratory rate
+ 72	mask->Systolic blood pressure
+ 73	mask->Temperature
+ 74	mask->Weight
+ 75	mask->pH
