@@ -28,6 +28,7 @@ class SingleAttentionPerFeatureNew(nn.Module):
         self.sigmoid = nn.Sigmoid()
         self.relu = nn.ReLU()
 
+
     def forward(self, H):
         """
         H: [B, T, hidden_dim] from a feature-specific GRU
@@ -132,6 +133,10 @@ class MultiHeadedAttention(nn.Module):
 
         self.dropout = nn.Dropout(p=dropout)
 
+        # registers empty buffers that will be filled on the first forward pass
+        self.register_buffer("saved_attn_avg", torch.zeros(0))            # will become [H, N, N]
+        self.register_buffer("saved_attn_count", torch.zeros((), dtype=torch.float32))
+
     def forward(self, query, key, value, mask=None):
         B = query.size(0)
         N = query.size(1)
@@ -145,6 +150,19 @@ class MultiHeadedAttention(nn.Module):
             scores = scores.masked_fill(mask == 0, -1e9)
 
         p_attn = F.softmax(scores, dim=-1)
+        
+        # --- store a running average of attention across batches ---
+        # CRITICAL: Save BEFORE dropout to preserve row-normalized attention
+        with torch.no_grad():
+            cur = p_attn.detach().mean(dim=0)  # [H, N, N] average over batch
+            if self.saved_attn_avg.numel() == 0:
+                self.saved_attn_avg = cur.clone()
+            else:
+                self.saved_attn_avg = (self.saved_attn_avg * self.saved_attn_count + cur) / (self.saved_attn_count + 1.0)
+            self.saved_attn_count += 1.0
+        # -----------------------------------------------------------
+
+        # Apply dropout AFTER saving attention
         p_attn = self.dropout(p_attn)
 
         x = torch.matmul(p_attn, v)  # [B, H, N, d_k]
