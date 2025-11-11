@@ -28,7 +28,6 @@ class SingleAttentionPerFeatureNew(nn.Module):
         self.sigmoid = nn.Sigmoid()
         self.relu = nn.ReLU()
 
-
     def forward(self, H):
         """
         H: [B, T, hidden_dim] from a feature-specific GRU
@@ -41,22 +40,17 @@ class SingleAttentionPerFeatureNew(nn.Module):
         q = torch.matmul(H[:, -1, :], self.Wt).unsqueeze(1)
         k = torch.matmul(H, self.Wx)
 
-        # Dot attention scores across time
-        # dot_product: [B, T]
+        # Dot attention scores across time -> [B, T]
         dot_product = torch.matmul(q, k.transpose(1, 2)).squeeze(1)
 
-        # Time indices from most recent back
-        # b_time: [B, T]
+        # Time indices from most recent back -> [B, T]
         b_time = torch.arange(T - 1, -1, -1, dtype=torch.float32, device=device).unsqueeze(0).repeat(B, 1) + 1.0
 
         # Authors' nonlinear time-aware normalization
-        # denominator: [B, T]
         denom = self.sigmoid(self.rate) * (torch.log(2.72 + (1 - self.sigmoid(dot_product))) * b_time)
 
-        # e: [B, T]
+        # Alignment scores and weights
         e = self.relu(self.sigmoid(dot_product) / denom)
-
-        # Attention weights
         a = self.softmax(e)  # [B, T]
 
         # Weighted sum in the original hidden space
@@ -119,6 +113,10 @@ class FinalAttentionQKV(nn.Module):
 class MultiHeadedAttention(nn.Module):
     """
     Multi-head self-attention with DeCov regularization.
+
+    *Revision*: during eval, we collect POST-SOFTMAX per-batch attention matrices
+    (before dropout) in `self._attn_batches` so the caller can average across patients
+    and reproduce the paper-style cross-feature heatmaps.
     """
     def __init__(self, d_model, num_heads, dropout=0.1):
         super().__init__()
@@ -133,9 +131,12 @@ class MultiHeadedAttention(nn.Module):
 
         self.dropout = nn.Dropout(p=dropout)
 
-        # registers empty buffers that will be filled on the first forward pass
+        # Running average buffers kept for backward compatibility
         self.register_buffer("saved_attn_avg", torch.zeros(0))            # will become [H, N, N]
         self.register_buffer("saved_attn_count", torch.zeros((), dtype=torch.float32))
+
+        # NEW: hold raw per-batch attentions during evaluation
+        self._attn_batches = []  # list of [B, H, N, N] tensors on CPU
 
     def forward(self, query, key, value, mask=None):
         B = query.size(0)
@@ -149,10 +150,13 @@ class MultiHeadedAttention(nn.Module):
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e9)
 
-        p_attn = F.softmax(scores, dim=-1)
-        
-        # --- store a running average of attention across batches ---
-        # CRITICAL: Save BEFORE dropout to preserve row-normalized attention
+        p_attn = F.softmax(scores, dim=-1)  # [B, H, N, N]
+
+        # NEW: capture per-batch attention BEFORE dropout when evaluating
+        if not self.training:
+            self._attn_batches.append(p_attn.detach().cpu())
+
+        # Keep the historical running mean as before (pre-dropout)
         with torch.no_grad():
             cur = p_attn.detach().mean(dim=0)  # [H, N, N] average over batch
             if self.saved_attn_avg.numel() == 0:
@@ -160,7 +164,6 @@ class MultiHeadedAttention(nn.Module):
             else:
                 self.saved_attn_avg = (self.saved_attn_avg * self.saved_attn_count + cur) / (self.saved_attn_count + 1.0)
             self.saved_attn_count += 1.0
-        # -----------------------------------------------------------
 
         # Apply dropout AFTER saving attention
         p_attn = self.dropout(p_attn)
@@ -223,6 +226,9 @@ class SublayerConnection(nn.Module):
 class ConCare(nn.Module):
     """
     Multi-channel GRU plus per-feature attention and feature pooling.
+
+    *Revision*: exposes two helpers to control/carry the captured attention
+    from the MultiHeadedAttention block during evaluation.
     """
     def __init__(self, input_dim, hidden_dim, d_model, MHD_num_head, d_ff, output_dim, keep_prob, demographic_dim):
         super().__init__()
@@ -270,6 +276,29 @@ class ConCare(nn.Module):
         self.tanh = nn.Tanh()
         self.sigmoid = nn.Sigmoid()
         self.relu = nn.ReLU()
+
+    # --- NEW: helpers to manage captured attention ---------------------------------
+    def reset_attn_capture(self):
+        """Clear per-batch attention capture and running averages."""
+        try:
+            self.MultiHeadedAttention._attn_batches = []
+            if hasattr(self.MultiHeadedAttention, "saved_attn_avg") and self.MultiHeadedAttention.saved_attn_avg.numel() > 0:
+                self.MultiHeadedAttention.saved_attn_avg.zero_()
+            if hasattr(self.MultiHeadedAttention, "saved_attn_count"):
+                self.MultiHeadedAttention.saved_attn_count.zero_()
+        except Exception:
+            pass
+
+    def get_captured_attn(self):
+        """Return [H, N, N] averaged over all eval batches since last reset.
+        Returns None if nothing was captured.
+        """
+        batches = getattr(self.MultiHeadedAttention, "_attn_batches", [])
+        if not batches:
+            return None
+        A = torch.cat(batches, dim=0)  # [B_total, H, N, N]
+        return A.mean(dim=0)           # [H, N, N]
+    # -------------------------------------------------------------------------------
 
     def forward(self, x, demo_input):
         """
