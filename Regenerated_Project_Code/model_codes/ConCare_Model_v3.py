@@ -9,10 +9,11 @@ class SingleAttentionPerFeatureNew(nn.Module):
     Time-aware attention per feature using the authors' 'new' formulation.
     Matches their rate-controlled nonlinear time decay.
     """
-    def __init__(self, hidden_dim, attention_hidden_dim=8):
+    def __init__(self, hidden_dim, attention_hidden_dim=8, time_aware=True):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.attention_hidden_dim = attention_hidden_dim
+        self.time_aware = bool(time_aware)
 
         # Query from last timestep, Key from all timesteps
         self.Wt = nn.Parameter(torch.randn(hidden_dim, attention_hidden_dim))
@@ -20,8 +21,11 @@ class SingleAttentionPerFeatureNew(nn.Module):
         nn.init.kaiming_uniform_(self.Wx, a=math.sqrt(5))
         nn.init.kaiming_uniform_(self.Wt, a=math.sqrt(5))
 
-        # Learned rate that controls the time decay strength
-        self.rate = nn.Parameter(torch.zeros(1) + 0.8)
+        # Learned rate that controls the time decay strength (when enabled)
+        if self.time_aware:
+            self.rate = nn.Parameter(torch.zeros(1) + 0.8)
+        else:
+            self.register_parameter("rate", None)
 
         self.tanh = nn.Tanh()
         self.softmax = nn.Softmax(dim=1)
@@ -40,20 +44,21 @@ class SingleAttentionPerFeatureNew(nn.Module):
         q = torch.matmul(H[:, -1, :], self.Wt).unsqueeze(1)
         k = torch.matmul(H, self.Wx)
 
-        # Dot attention scores across time
-        # dot_product: [B, T]
+        # Dot attention scores across time: [B, T]
         dot_product = torch.matmul(q, k.transpose(1, 2)).squeeze(1)
 
-        # Time indices from most recent back
-        # b_time: [B, T]
-        b_time = torch.arange(T - 1, -1, -1, dtype=torch.float32, device=device).unsqueeze(0).repeat(B, 1) + 1.0
+        if self.time_aware:
+            # Time indices from most recent back: [B, T]
+            b_time = torch.arange(T - 1, -1, -1, dtype=torch.float32, device=device).unsqueeze(0).repeat(B, 1) + 1.0
 
-        # Authors' nonlinear time-aware normalization
-        # denominator: [B, T]
-        denom = self.sigmoid(self.rate) * (torch.log(2.72 + (1 - self.sigmoid(dot_product))) * b_time)
+            # Authors' nonlinear time-aware normalization: [B, T]
+            denom = self.sigmoid(self.rate) * (torch.log(2.72 + (1 - self.sigmoid(dot_product))) * b_time)
 
-        # e: [B, T]
-        e = self.relu(self.sigmoid(dot_product) / denom)
+            # e: [B, T]
+            e = self.relu(self.sigmoid(dot_product) / denom)
+        else:
+            # Pure dot-product attention when time-aware decay is disabled
+            e = dot_product
 
         # Attention weights
         a = self.softmax(e)  # [B, T]
@@ -206,7 +211,18 @@ class ConCare(nn.Module):
     """
     Multi-channel GRU plus per-feature attention and feature pooling.
     """
-    def __init__(self, input_dim, hidden_dim, d_model, MHD_num_head, d_ff, output_dim, keep_prob, demographic_dim):
+    def __init__(
+        self,
+        input_dim,
+        hidden_dim,
+        d_model,
+        MHD_num_head,
+        d_ff,
+        output_dim,
+        keep_prob,
+        demographic_dim,
+        time_aware_attention=True,
+    ):
         super().__init__()
 
         # Hyperparameters
@@ -218,13 +234,18 @@ class ConCare(nn.Module):
         self.output_dim = output_dim
         self.keep_prob = keep_prob
         self.demographic_dim = demographic_dim
+        self.time_aware_attention = bool(time_aware_attention)
 
         # Per-feature GRUs
         self.GRUs = nn.ModuleList([nn.GRU(1, self.hidden_dim, batch_first=True) for _ in range(self.input_dim)])
 
-        # Per-feature attention using authors' 'new' time-aware formulation
+        # Per-feature attention using authors' 'new' formulation (optionally time-aware)
         self.LastStepAttentions = nn.ModuleList([
-            SingleAttentionPerFeatureNew(self.hidden_dim, attention_hidden_dim=8)
+            SingleAttentionPerFeatureNew(
+                self.hidden_dim,
+                attention_hidden_dim=8,
+                time_aware=self.time_aware_attention,
+            )
             for _ in range(self.input_dim)
         ])
 

@@ -60,6 +60,8 @@ def build_argparser():
     p.add_argument("--compile", action="store_true", help="Enable torch.compile if Triton is available")
     p.add_argument("--papers_metrics_mode", action="store_true",
                    help="Use the authors' metric implementation for AUROC and AUPRC")
+    p.add_argument("--no_time_aware_attention", action="store_true",
+                   help="Disable the time-aware decay term in per-feature attention (ConCare w/o Time-Aware)")
 
     # -------- Parity mode options (authors' exact tensors) --------
     p.add_argument("--parity_mode", action="store_true",
@@ -265,12 +267,12 @@ def _choose_workers():
     return workers, workers > 0
 
 
-def make_model(input_dim, device, use_compile=False):
+def make_model(input_dim, device, use_compile=False, time_aware_attention=True):
     try:
         from model_codes.ConCare_Model_v3 import ConCare
     except ModuleNotFoundError:
         from ConCare_Model_v3 import ConCare
-    print(f"[INFO] Creating model with input_dim={input_dim}")
+    print(f"[INFO] Creating model with input_dim={input_dim} time_aware_attention={time_aware_attention}")
     model = ConCare(
         input_dim=input_dim,
         hidden_dim=64,
@@ -280,6 +282,7 @@ def make_model(input_dim, device, use_compile=False):
         output_dim=1,
         keep_prob=0.5,
         demographic_dim=12,
+        time_aware_attention=time_aware_attention,
     ).to(device)
     if use_compile:
         try:
@@ -305,7 +308,7 @@ def tensor_stats(name, t):
     print("[DIAG]", msg)
 
 
-def diag_preflight(train_ds, device, collate_fn):
+def diag_preflight(train_ds, device, collate_fn, *, time_aware_attention=True):
     print("\n[DIAG] ===== Preflight diagnostics =====")
     X0, D0, y0 = train_ds[0]
     print(f"[DIAG] First item shapes -> X:{tuple(X0.shape)} D:{tuple(D0.shape)} y:{tuple(y0.shape)}")
@@ -313,7 +316,7 @@ def diag_preflight(train_ds, device, collate_fn):
                         num_workers=0, pin_memory=True)
     Xb, Db, yb = next(iter(loader))
     tensor_stats("X batch", Xb); tensor_stats("D batch", Db); tensor_stats("y batch", yb)
-    model = make_model(Xb.shape[-1], device, use_compile=False)
+    model = make_model(Xb.shape[-1], device, use_compile=False, time_aware_attention=time_aware_attention)
     model.eval()
     with torch.no_grad():
         Xb, Db, yb = Xb.to(device), Db.to(device), yb.to(device)
@@ -498,9 +501,19 @@ def main():
                               prefetch_factor=2 if use_workers else None)
 
     if args.diag:
-        diag_preflight(train_ds, args.device, ram_pad_collate)
+        diag_preflight(
+            train_ds,
+            args.device,
+            ram_pad_collate,
+            time_aware_attention=not args.no_time_aware_attention,
+        )
 
-    model = make_model(input_dim, args.device, use_compile=args.compile)
+    model = make_model(
+        input_dim,
+        args.device,
+        use_compile=args.compile,
+        time_aware_attention=not args.no_time_aware_attention,
+    )
 
     # ---- Unweighted BCE on probabilities ----
     criterion = torch.nn.BCELoss()
@@ -520,7 +533,15 @@ def main():
         f.write(f"=== ConCare Training Log Started ({run_timestamp}) ===\n")
         f.write(f"epochs={args.epochs}  batch_size={args.batch_size}  lr={args.lr}  weight_decay={args.weight_decay}  "
                 f"lambda_decov={args.lambda_decov}  amp={args.amp}  compile={args.compile}\n")
-        f.write(f"input_dim={input_dim}  timestep={args.timestep}  append_masks={args.append_masks}\n\n")
+        f.write(
+            "input_dim={input_dim}  timestep={timestep}  append_masks={append_masks}  time_aware_attention={time_aware}\n\n"
+            .format(
+                input_dim=input_dim,
+                timestep=args.timestep,
+                append_masks=args.append_masks,
+                time_aware=not args.no_time_aware_attention,
+            )
+        )
 
     # decov warmup
     target_lambda = args.lambda_decov

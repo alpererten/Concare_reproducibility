@@ -5,12 +5,11 @@ We load the original ConCare implementation from `concare-notebook_trained_25102
 - has_positional_encoding: authors=True, regenerated=False
 - module_order: authors=["PositionalEncoding", "GRUs", "LastStepAttentions", "FinalAttentionQKV", "MultiHeadedAttention", "SublayerConnection", "PositionwiseFeedForward", "demo_proj_main", "demo_proj", "output0", "output1", "dropout", "tanh", "softmax", "sigmoid", "relu"], regenerated=["GRUs", "LastStepAttentions", "demo_proj_main", "demo_proj", "MultiHeadedAttention", "SublayerConnection", "PositionwiseFeedForward", "FinalAttentionQKV", "output0", "output1", "dropout", "tanh", "sigmoid", "relu"]
 - per_feature_attention_cls: authors=SingleAttention, regenerated=SingleAttentionPerFeatureNew
-- per_feature_attention_time_aware: authors=True, regenerated=False
 
 Interpretation:
 
 - The authors keep a `PositionalEncoding` module (even though it is not used later), while the regenerated model omits it entirely.
-- Our reproduction swaps the generic `SingleAttention` class for a specialized `SingleAttentionPerFeatureNew` implementation. The new module handles time decay internally and therefore does not expose the `time_aware` flag, which shows up as `False` in the comparison.
+- Our reproduction swaps the generic `SingleAttention` class for a specialized `SingleAttentionPerFeatureNew` implementation. The new module now exposes the `time_aware` toggle (and a CLI flag `--no_time_aware_attention`) so we can reproduce ConCare's time-decay ablation directly, despite reusing a different internal implementation.
 
 ## Forward & Training Smoke Tests
 

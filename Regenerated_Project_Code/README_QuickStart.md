@@ -125,10 +125,24 @@ Each file includes:
 | `--compile` | Enables `torch.compile` (PyTorch 2.0+) |
 | `--diag` | Runs dataset and model diagnostics |
 | `--papers_metrics_mode` | Enables authors’ metrics printing |
+| `--no_time_aware_attention` | Turns off ConCare’s per-feature time decay to reproduce the paper’s ablation |
 
 ---
 
-## 📈 8. Reproducing Authors’ Metrics Only
+## 🧪 8. ConCare w/o Time-Aware (Paper Ablation)
+
+Section 3 (“Capturing the Impact of Time Interval”) of *Ma et al., AAAI 2020* defines a time-aware decay in the per-feature attention. To reproduce the ConCare (w/o Time-Aware) ablation from Table 1, disable that decay:
+
+```bash
+python train.py --epochs 100 --batch_size 256 --lr 1e-3 \
+  --append_masks --amp --no_time_aware_attention
+```
+
+Run the command twice (with and without the flag) while keeping caches, seeds, and hyper-parameters identical. The training log (`results/train_val_test_log_*.txt`) now records `time_aware_attention=False`, so you can diff AUROC/AUPRC lines directly. Expect the full model to approach the paper’s MIMIC-III scores (AUROC ≈ 0.870, AUPRC ≈ 0.532) and the w/o time-aware run to lag behind—matching the qualitative drop reported in the paper’s ablation discussion.
+
+---
+
+## 📈 9. Reproducing Authors’ Metrics Only
 
 To compute the authors’ metrics on saved predictions:
 
@@ -144,7 +158,7 @@ This will return all metrics including **AUC of ROC**, **AUC of PRC**, **Min(+P,
 
 ---
 
-## ✅ 9. Typical Workflow Summary
+## ✅ 10. Typical Workflow Summary
 
 1. Prepare preprocessed MIMIC-III data  
 2. Generate cached datasets:
