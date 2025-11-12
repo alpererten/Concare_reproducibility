@@ -1,1 +1,1 @@
-# Please see README_Quikcstart under Concare_reproducibilty/ folder for instructions
+# Please see README_Quikcstart under Regenerated_Project_Code/ folder for instructions
