@@ -7,6 +7,7 @@ import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 import argparse
+import importlib
 import glob
 import shutil
 from pathlib import Path
@@ -39,6 +40,38 @@ except ModuleNotFoundError:
 CACHE_DIR = os.path.join("data", "normalized_data_cache")
 NORM_STATS = os.path.join(CACHE_DIR, "np_norm_stats.npz")
 
+_MODEL_VARIANTS = {
+    "concare_full": {
+        "class_name": "ConCare",
+        "modules": ("model_codes.ConCare_Model_v3", "ConCare_Model_v3"),
+        "description": "Full ConCare (multi-channel + DeCov)",
+        "uses_decov": True,
+    },
+    "concare_mc_minus": {
+        "class_name": "ConCareMCMinus",
+        "modules": ("model_codes.ConCare_MC_minus", "ConCare_MC_minus"),
+        "description": "ConCareMC- ablation (visit embedding only, no DeCov)",
+        "uses_decov": False,
+    },
+}
+
+
+def _load_model_class(variant_key: str):
+    meta = _MODEL_VARIANTS.get(variant_key)
+    if meta is None:
+        raise ValueError(f"Unknown model_variant '{variant_key}'")
+    last_exc = None
+    for module_name in meta["modules"]:
+        try:
+            module = importlib.import_module(module_name)
+            return getattr(module, meta["class_name"])
+        except (ModuleNotFoundError, AttributeError) as exc:
+            last_exc = exc
+            continue
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"Unable to import model class for variant '{variant_key}'")
+
 
 def build_argparser():
     p = argparse.ArgumentParser("ConCare Trainer (RAM-only)")
@@ -60,6 +93,8 @@ def build_argparser():
     p.add_argument("--compile", action="store_true", help="Enable torch.compile if Triton is available")
     p.add_argument("--papers_metrics_mode", action="store_true",
                    help="Use the authors' metric implementation for AUROC and AUPRC")
+    p.add_argument("--model_variant", choices=sorted(_MODEL_VARIANTS.keys()), default="concare_full",
+                   help="Choose which ConCare variant to train (full model vs. ConCareMC- ablation)")
 
     # -------- Parity mode options (authors' exact tensors) --------
     p.add_argument("--parity_mode", action="store_true",
@@ -265,13 +300,12 @@ def _choose_workers():
     return workers, workers > 0
 
 
-def make_model(input_dim, device, use_compile=False):
-    try:
-        from model_codes.ConCare_Model_v3 import ConCare
-    except ModuleNotFoundError:
-        from ConCare_Model_v3 import ConCare
-    print(f"[INFO] Creating model with input_dim={input_dim}")
-    model = ConCare(
+def make_model(input_dim, device, args, use_compile=False):
+    meta = _MODEL_VARIANTS[args.model_variant]
+    ModelClass = _load_model_class(args.model_variant)
+    print(f"[INFO] Creating model variant='{args.model_variant}' ({meta['description']}) "
+          f"with input_dim={input_dim}")
+    model = ModelClass(
         input_dim=input_dim,
         hidden_dim=64,
         d_model=64,
@@ -305,7 +339,7 @@ def tensor_stats(name, t):
     print("[DIAG]", msg)
 
 
-def diag_preflight(train_ds, device, collate_fn):
+def diag_preflight(train_ds, device, collate_fn, args):
     print("\n[DIAG] ===== Preflight diagnostics =====")
     X0, D0, y0 = train_ds[0]
     print(f"[DIAG] First item shapes -> X:{tuple(X0.shape)} D:{tuple(D0.shape)} y:{tuple(y0.shape)}")
@@ -313,7 +347,7 @@ def diag_preflight(train_ds, device, collate_fn):
                         num_workers=0, pin_memory=True)
     Xb, Db, yb = next(iter(loader))
     tensor_stats("X batch", Xb); tensor_stats("D batch", Db); tensor_stats("y batch", yb)
-    model = make_model(Xb.shape[-1], device, use_compile=False)
+    model = make_model(Xb.shape[-1], device, args, use_compile=False)
     model.eval()
     with torch.no_grad():
         Xb, Db, yb = Xb.to(device), Db.to(device), yb.to(device)
@@ -461,6 +495,7 @@ def print_thresholded_report(yt_true, yt_prob, thr, header="📊 Test"):
 
 def main():
     args = build_argparser().parse_args()
+    variant_meta = _MODEL_VARIANTS[args.model_variant]
 
     # override cache folder via CLI
     global CACHE_DIR, NORM_STATS
@@ -498,9 +533,15 @@ def main():
                               prefetch_factor=2 if use_workers else None)
 
     if args.diag:
-        diag_preflight(train_ds, args.device, ram_pad_collate)
+        diag_preflight(train_ds, args.device, ram_pad_collate, args)
 
-    model = make_model(input_dim, args.device, use_compile=args.compile)
+    model = make_model(input_dim, args.device, args, use_compile=args.compile)
+
+    if not variant_meta["uses_decov"] and args.lambda_decov != 0.0:
+        print(f"[WARN] Model variant '{args.model_variant}' disables DeCov. "
+              f"Overriding lambda_decov={args.lambda_decov} → 0.0")
+    target_lambda = args.lambda_decov if variant_meta["uses_decov"] else 0.0
+    warmup_epochs = 10
 
     # ---- Unweighted BCE on probabilities ----
     criterion = torch.nn.BCELoss()
@@ -519,15 +560,13 @@ def main():
     with open(results_path, "w") as f:
         f.write(f"=== ConCare Training Log Started ({run_timestamp}) ===\n")
         f.write(f"epochs={args.epochs}  batch_size={args.batch_size}  lr={args.lr}  weight_decay={args.weight_decay}  "
-                f"lambda_decov={args.lambda_decov}  amp={args.amp}  compile={args.compile}\n")
+                f"lambda_decov={args.lambda_decov}  effective_lambda={target_lambda}  amp={args.amp}  compile={args.compile}\n")
+        f.write(f"model_variant={args.model_variant} ({variant_meta['description']})  uses_decov={variant_meta['uses_decov']}\n")
         f.write(f"input_dim={input_dim}  timestep={args.timestep}  append_masks={args.append_masks}\n\n")
-
-    # decov warmup
-    target_lambda = args.lambda_decov
-    warmup_epochs = 10
 
     print(f"\n🚀 Starting training at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"   Input dimension: {input_dim}")
+    print(f"   Model variant: {args.model_variant} ({variant_meta['description']})")
     print(f"   Batch size: {args.batch_size}")
     print(f"   Learning rate: {args.lr}")
     print(f"   Using AMP: {args.amp}")

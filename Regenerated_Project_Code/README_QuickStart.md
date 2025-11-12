@@ -33,7 +33,9 @@ Regenerated_Project_Code/
 ├── ram_dataset.py            # Dataset loader for cached .npz data
 ├── metrics.py                # Modern local metrics (AUPRC, AUROC, etc.)
 ├── metrics_authors.py        # Authors’ original metrics for parity check
-├── ConCare_Model_v3.py       # Neural network model definition
+├── model_codes/
+│   ├── ConCare_Model_v3.py   # Full ConCare (multi-channel + DeCov)
+│   └── ConCare_MC_minus.py   # ConCareMC- ablation (visit-level, no DeCov)
 ├── data/
 │   ├── normalized_data_cache/  # Cached train/val/test .npz files
 │   └── demographic/            # Optional demographic CSVs per patient
@@ -76,6 +78,16 @@ This will:
   results/train_val_test_log_<timestamp>.txt
   results/test_results_<timestamp>.txt
   ```
+
+### 🔬 ConCareMC- (w/o DeCov) Ablation
+
+To match the paper's *ConCareMC-* study (visit-level embedding only, no decorrelation loss), pass:
+
+```bash
+python train.py --model_variant concare_mc_minus --epochs 100 --batch_size 256 --lr 1e-3 --append_masks --amp
+```
+
+The trainer automatically disables the DeCov loss (`lambda_decov → 0`) for this variant, so no extra flags are required.
 
 ---
 
@@ -121,6 +133,7 @@ Each file includes:
 | `--amp` | Enables mixed-precision training |
 | `--append_masks` | Adds time-series mask features |
 | `--lambda_decov` | Sets decorrelation loss weight (default = 1e-3) |
+| `--model_variant` | `concare_full` (default) or `concare_mc_minus` ablation |
 | `--weight_decay` | Adds Adam weight decay |
 | `--compile` | Enables `torch.compile` (PyTorch 2.0+) |
 | `--diag` | Runs dataset and model diagnostics |
@@ -162,7 +175,7 @@ This will return all metrics including **AUC of ROC**, **AUC of PRC**, **Min(+P,
 
 ### 🧪 Notes
 
-- **Decorrelator (DeCov)**: The `--lambda_decov` loss term is optional. Setting it to 0 matches the authors’ reported configuration.
+- **Decorrelator (DeCov)**: The `--lambda_decov` loss term is optional. Setting it to 0 matches the authors’ reported configuration. The `concare_mc_minus` model variant forces this term to zero automatically.
 - **Demographics**: Ensure your `RAMDataset` includes demographic vectors (age, gender, etc.) for full replication.
 - **Hardware**: Training on RTX 4090 / A100 / V100 yields epoch times ≈ 1–2 minutes.
 
