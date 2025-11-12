@@ -18,6 +18,10 @@ from torch import amp
 from datetime import datetime
 from train_helpers import RAMDataset, pad_collate as ram_pad_collate
 from train_helpers import set_seed
+try:
+    from worker_utils import resolve_num_workers
+except ImportError:  # pragma: no cover - package style
+    from .worker_utils import resolve_num_workers
 
 
 # ---- Metrics selection ----
@@ -93,6 +97,8 @@ def build_argparser():
     p.add_argument("--compile", action="store_true", help="Enable torch.compile if Triton is available")
     p.add_argument("--papers_metrics_mode", action="store_true",
                    help="Use the authors' metric implementation for AUROC and AUPRC")
+    p.add_argument("--num_workers", type=int, default=-1,
+                   help="DataLoader workers per process (-1 auto, 0 disables multiprocessing)")
     p.add_argument("--model_variant", choices=sorted(_MODEL_VARIANTS.keys()), default="concare_full",
                    help="Choose which ConCare variant to train (full model vs. ConCareMC- ablation)")
 
@@ -294,12 +300,6 @@ def _ensure_materialized(args):
         _ensure_materialized_default(args.timestep, args.append_masks, args.cache_dir)
 
 
-def _choose_workers():
-    cpu_cnt = os.cpu_count() or 4
-    workers = min(8, max(2, cpu_cnt // 2))
-    return workers, workers > 0
-
-
 def make_model(input_dim, device, args, use_compile=False):
     meta = _MODEL_VARIANTS[args.model_variant]
     ModelClass = _load_model_class(args.model_variant)
@@ -411,8 +411,9 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
             with amp.autocast("cuda", dtype=torch.bfloat16):
                 logits, decov = model(X, D)
                 decov = _sanitize_decov(decov)
-                bce = criterion(logits, y)
-                loss = bce + lambda_decov * decov
+            with amp.autocast(enabled=False):
+                bce = criterion(logits.float(), y.float())
+            loss = bce + lambda_decov * decov.float()
             if not torch.isfinite(loss):
                 for g in optimizer.param_groups:
                     g['lr'] = max(g['lr'] * 0.5, 1e-6)
@@ -521,7 +522,11 @@ def main():
 
     X0, _, _ = train_ds[0]; input_dim = X0.shape[1]
 
-    workers, use_workers = _choose_workers()
+    workers, use_workers = resolve_num_workers(args.num_workers)
+    if args.num_workers >= 0:
+        print(f"[INFO] Using user-provided num_workers={args.num_workers}")
+    else:
+        print(f"[INFO] Auto-selected num_workers={workers}")
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,  collate_fn=ram_pad_collate,
                               num_workers=workers, pin_memory=True, persistent_workers=use_workers,
                               prefetch_factor=2 if use_workers else None)

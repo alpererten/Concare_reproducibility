@@ -134,6 +134,7 @@ Each file includes:
 | `--append_masks` | Adds time-series mask features |
 | `--lambda_decov` | Sets decorrelation loss weight (default = 1e-3) |
 | `--model_variant` | `concare_full` (default) or `concare_mc_minus` ablation |
+| `--num_workers` | Override DataLoader workers (`-1` auto, `0` serial) |
 | `--weight_decay` | Adds Adam weight decay |
 | `--compile` | Enables `torch.compile` (PyTorch 2.0+) |
 | `--diag` | Runs dataset and model diagnostics |
