@@ -122,6 +122,7 @@ Each file includes:
 | `--append_masks` | Adds time-series mask features |
 | `--lambda_decov` | Sets decorrelation loss weight (default = 1e-3) |
 | `--weight_decay` | Adds Adam weight decay |
+| `--num_workers` | Override DataLoader workers (`-1` auto, `0` serial) |
 | `--compile` | Enables `torch.compile` (PyTorch 2.0+) |
 | `--diag` | Runs dataset and model diagnostics |
 | `--papers_metrics_mode` | Enables authors’ metrics printing |

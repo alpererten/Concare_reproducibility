@@ -17,6 +17,10 @@ from torch import amp
 from datetime import datetime
 from train_helpers import RAMDataset, pad_collate as ram_pad_collate
 from train_helpers import set_seed
+try:
+    from worker_utils import resolve_num_workers
+except ImportError:  # pragma: no cover
+    from .worker_utils import resolve_num_workers
 
 
 # ---- Metrics selection ----
@@ -62,6 +66,8 @@ def build_argparser():
                    help="Use the authors' metric implementation for AUROC and AUPRC")
     p.add_argument("--no_time_aware_attention", action="store_true",
                    help="Disable the time-aware decay term in per-feature attention (ConCare w/o Time-Aware)")
+    p.add_argument("--num_workers", type=int, default=-1,
+                   help="DataLoader workers (-1 auto, 0 to force single-process loading)")
 
     # -------- Parity mode options (authors' exact tensors) --------
     p.add_argument("--parity_mode", action="store_true",
@@ -261,12 +267,6 @@ def _ensure_materialized(args):
         _ensure_materialized_default(args.timestep, args.append_masks, args.cache_dir)
 
 
-def _choose_workers():
-    cpu_cnt = os.cpu_count() or 4
-    workers = min(8, max(2, cpu_cnt // 2))
-    return workers, workers > 0
-
-
 def make_model(input_dim, device, use_compile=False, time_aware_attention=True):
     try:
         from model_codes.ConCare_Model_v3 import ConCare
@@ -380,8 +380,9 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
             with amp.autocast("cuda", dtype=torch.bfloat16):
                 logits, decov = model(X, D)
                 decov = _sanitize_decov(decov)
-                bce = criterion(logits, y)
-                loss = bce + lambda_decov * decov
+            bce = criterion(logits.float(), y.float())
+            decov = decov.float()
+            loss = bce + lambda_decov * decov
             if not torch.isfinite(loss):
                 for g in optimizer.param_groups:
                     g['lr'] = max(g['lr'] * 0.5, 1e-6)
@@ -489,7 +490,11 @@ def main():
 
     X0, _, _ = train_ds[0]; input_dim = X0.shape[1]
 
-    workers, use_workers = _choose_workers()
+    workers, use_workers = resolve_num_workers(args.num_workers)
+    if args.num_workers >= 0:
+        print(f"[INFO] Using user-provided num_workers={args.num_workers}")
+    else:
+        print(f"[INFO] Auto-selected num_workers={workers}")
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,  collate_fn=ram_pad_collate,
                               num_workers=workers, pin_memory=True, persistent_workers=use_workers,
                               prefetch_factor=2 if use_workers else None)
