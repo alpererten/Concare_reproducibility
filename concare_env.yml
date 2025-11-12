@@ -1,0 +1,19 @@
+name: concare_env
+channels:
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
+  - https://repo.anaconda.com/pkgs/msys2
+  - defaults
+dependencies:
+  - python=3.10
+  - matplotlib
+  - numpy
+  - pandas
+  - scikit-learn
+  - seaborn
+  - tqdm
+  - pytorch-cuda=12.4
+  - torchaudio=2.5.1
+  - torchvision=0.20.1
+  - notebook
+prefix: C:\Users\alper\anaconda3\envs\concare_env
