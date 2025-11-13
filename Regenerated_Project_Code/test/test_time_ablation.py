@@ -33,6 +33,31 @@ class TimeAblationTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(decov))
         self.assertFalse(model.LastStepAttentions[0].time_aware)
 
+    def test_positional_sequence_encoder(self):
+        x, demo = _synthetic()
+        model = ConCare(
+            input_dim=x.shape[-1],
+            hidden_dim=8,
+            d_model=8,
+            MHD_num_head=2,
+            d_ff=16,
+            output_dim=1,
+            keep_prob=0.9,
+            demographic_dim=demo.shape[-1],
+            time_aware_attention=True,  # should be ignored when positional
+            sequence_encoder="positional",
+            positional_layers=1,
+            positional_heads=2,
+            positional_dropout=0.0,
+        )
+        out, decov = model(x, demo)
+
+        self.assertEqual(out.shape, (x.shape[0], 1))
+        self.assertTrue(torch.all((out >= 0) & (out <= 1)))
+        self.assertTrue(torch.isfinite(decov))
+        self.assertEqual(model.sequence_encoder, "positional")
+        self.assertFalse(model.LastStepAttentions[0].time_aware)
+
 
 if __name__ == "__main__":
     unittest.main()

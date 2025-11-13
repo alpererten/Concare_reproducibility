@@ -1,7 +1,34 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
+
+
+class PositionalEncoding(nn.Module):
+    """
+    Standard sinusoidal positional encoding used by Transformer encoders.
+    """
+
+    def __init__(self, hidden_dim, dropout=0.0, max_len=512):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        position = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, hidden_dim, 2) * (-math.log(10000.0) / hidden_dim))
+
+        pe = torch.zeros(max_len, hidden_dim)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pe", pe.unsqueeze(0))  # [1, max_len, hidden_dim]
+
+    def forward(self, x):
+        """
+        x: [B, T, H]
+        """
+        seq_len = x.size(1)
+        x = x + self.pe[:, :seq_len, :]
+        return self.dropout(x)
 
 
 class SingleAttentionPerFeatureNew(nn.Module):
@@ -222,6 +249,10 @@ class ConCare(nn.Module):
         keep_prob,
         demographic_dim,
         time_aware_attention=True,
+        sequence_encoder: str = "gru",
+        positional_layers: int = 2,
+        positional_heads: int = 4,
+        positional_dropout: float = 0.1,
     ):
         super().__init__()
 
@@ -234,10 +265,33 @@ class ConCare(nn.Module):
         self.output_dim = output_dim
         self.keep_prob = keep_prob
         self.demographic_dim = demographic_dim
-        self.time_aware_attention = bool(time_aware_attention)
+        sequence_encoder = sequence_encoder.lower()
+        if sequence_encoder not in {"gru", "positional"}:
+            raise ValueError(f"sequence_encoder must be 'gru' or 'positional' (got {sequence_encoder})")
+        self.sequence_encoder = sequence_encoder
+        self.time_aware_attention = bool(time_aware_attention and self.sequence_encoder == "gru")
 
-        # Per-feature GRUs
-        self.GRUs = nn.ModuleList([nn.GRU(1, self.hidden_dim, batch_first=True) for _ in range(self.input_dim)])
+        # Per-feature encoders
+        if self.sequence_encoder == "gru":
+            self.GRUs = nn.ModuleList([nn.GRU(1, self.hidden_dim, batch_first=True) for _ in range(self.input_dim)])
+            self.value_projs = nn.ModuleList()
+            self.per_feature_transformer = None
+            self.positional_encoding = None
+        else:
+            self.GRUs = nn.ModuleList()
+            self.value_projs = nn.ModuleList([nn.Linear(1, self.hidden_dim) for _ in range(self.input_dim)])
+            if self.hidden_dim % positional_heads != 0:
+                raise ValueError(f"hidden_dim ({self.hidden_dim}) must be divisible by positional_heads ({positional_heads})")
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=self.hidden_dim,
+                nhead=positional_heads,
+                dim_feedforward=self.d_ff,
+                dropout=positional_dropout,
+                activation="gelu",
+                batch_first=True,
+            )
+            self.per_feature_transformer = nn.TransformerEncoder(encoder_layer, num_layers=positional_layers)
+            self.positional_encoding = PositionalEncoding(self.hidden_dim, dropout=positional_dropout)
 
         # Per-feature attention using authors' 'new' formulation (optionally time-aware)
         self.LastStepAttentions = nn.ModuleList([
@@ -290,12 +344,21 @@ class ConCare(nn.Module):
 
         # Per-feature GRU + attention
         feats = []
-        for i in range(F):
-            xi = x[:, :, i].unsqueeze(-1)  # [B, T, 1]
-            h0 = torch.zeros(1, B, self.hidden_dim, device=device)
-            gru_out, _ = self.GRUs[i](xi, h0)            # [B, T, H]
-            vi, _ = self.LastStepAttentions[i](gru_out)  # [B, H]
-            feats.append(vi.unsqueeze(1))                # [B, 1, H]
+        if self.sequence_encoder == "gru":
+            for i in range(F):
+                xi = x[:, :, i].unsqueeze(-1)  # [B, T, 1]
+                h0 = torch.zeros(1, B, self.hidden_dim, device=device)
+                gru_out, _ = self.GRUs[i](xi, h0)            # [B, T, H]
+                vi, _ = self.LastStepAttentions[i](gru_out)  # [B, H]
+                feats.append(vi.unsqueeze(1))                # [B, 1, H]
+        else:
+            for i in range(F):
+                xi = x[:, :, i].unsqueeze(-1)               # [B, T, 1]
+                proj = self.value_projs[i](xi)              # [B, T, H]
+                proj = self.positional_encoding(proj)       # [B, T, H]
+                enc = self.per_feature_transformer(proj)    # [B, T, H]
+                vi, _ = self.LastStepAttentions[i](enc)     # [B, H]
+                feats.append(vi.unsqueeze(1))               # [B, 1, H]
 
         feats = torch.cat(feats, dim=1)                  # [B, F, H]
         feats = torch.cat([feats, demo_main], dim=1)     # [B, F+1, H]

@@ -66,6 +66,14 @@ def build_argparser():
                    help="Use the authors' metric implementation for AUROC and AUPRC")
     p.add_argument("--no_time_aware_attention", action="store_true",
                    help="Disable the time-aware decay term in per-feature attention (ConCare w/o Time-Aware)")
+    p.add_argument("--sequence_encoder", choices=["gru", "positional"], default="gru",
+                   help="Select 'positional' to reproduce ConCarePE with a per-feature Transformer encoder")
+    p.add_argument("--positional_layers", type=int, default=2,
+                   help="Number of Transformer encoder layers when --sequence_encoder=positional")
+    p.add_argument("--positional_heads", type=int, default=4,
+                   help="Number of attention heads in the per-feature Transformer (must divide hidden_dim)")
+    p.add_argument("--positional_dropout", type=float, default=0.1,
+                   help="Dropout applied inside the positional encoder (0-1)")
     p.add_argument("--num_workers", type=int, default=-1,
                    help="DataLoader workers (-1 auto, 0 to force single-process loading)")
 
@@ -267,12 +275,27 @@ def _ensure_materialized(args):
         _ensure_materialized_default(args.timestep, args.append_masks, args.cache_dir)
 
 
-def make_model(input_dim, device, use_compile=False, time_aware_attention=True):
+def make_model(
+    input_dim,
+    device,
+    use_compile=False,
+    time_aware_attention=True,
+    sequence_encoder="gru",
+    positional_layers=2,
+    positional_heads=4,
+    positional_dropout=0.1,
+):
     try:
         from model_codes.ConCare_Model_v3 import ConCare
     except ModuleNotFoundError:
         from ConCare_Model_v3 import ConCare
-    print(f"[INFO] Creating model with input_dim={input_dim} time_aware_attention={time_aware_attention}")
+    if sequence_encoder == "positional" and time_aware_attention:
+        print("[INFO] sequence_encoder='positional' forces time-aware attention off (ConCarePE).")
+    print(
+        "[INFO] Creating model with input_dim={} time_aware_attention={} sequence_encoder={}".format(
+            input_dim, time_aware_attention and sequence_encoder == "gru", sequence_encoder
+        )
+    )
     model = ConCare(
         input_dim=input_dim,
         hidden_dim=64,
@@ -283,6 +306,10 @@ def make_model(input_dim, device, use_compile=False, time_aware_attention=True):
         keep_prob=0.5,
         demographic_dim=12,
         time_aware_attention=time_aware_attention,
+        sequence_encoder=sequence_encoder,
+        positional_layers=positional_layers,
+        positional_heads=positional_heads,
+        positional_dropout=positional_dropout,
     ).to(device)
     if use_compile:
         try:
@@ -308,7 +335,17 @@ def tensor_stats(name, t):
     print("[DIAG]", msg)
 
 
-def diag_preflight(train_ds, device, collate_fn, *, time_aware_attention=True):
+def diag_preflight(
+    train_ds,
+    device,
+    collate_fn,
+    *,
+    time_aware_attention=True,
+    sequence_encoder="gru",
+    positional_layers=2,
+    positional_heads=4,
+    positional_dropout=0.1,
+):
     print("\n[DIAG] ===== Preflight diagnostics =====")
     X0, D0, y0 = train_ds[0]
     print(f"[DIAG] First item shapes -> X:{tuple(X0.shape)} D:{tuple(D0.shape)} y:{tuple(y0.shape)}")
@@ -316,7 +353,16 @@ def diag_preflight(train_ds, device, collate_fn, *, time_aware_attention=True):
                         num_workers=0, pin_memory=True)
     Xb, Db, yb = next(iter(loader))
     tensor_stats("X batch", Xb); tensor_stats("D batch", Db); tensor_stats("y batch", yb)
-    model = make_model(Xb.shape[-1], device, use_compile=False, time_aware_attention=time_aware_attention)
+    model = make_model(
+        Xb.shape[-1],
+        device,
+        use_compile=False,
+        time_aware_attention=time_aware_attention,
+        sequence_encoder=sequence_encoder,
+        positional_layers=positional_layers,
+        positional_heads=positional_heads,
+        positional_dropout=positional_dropout,
+    )
     model.eval()
     with torch.no_grad():
         Xb, Db, yb = Xb.to(device), Db.to(device), yb.to(device)
@@ -510,14 +556,22 @@ def main():
             train_ds,
             args.device,
             ram_pad_collate,
-            time_aware_attention=not args.no_time_aware_attention,
+            time_aware_attention=not args.no_time_aware_attention and args.sequence_encoder == "gru",
+            sequence_encoder=args.sequence_encoder,
+            positional_layers=args.positional_layers,
+            positional_heads=args.positional_heads,
+            positional_dropout=args.positional_dropout,
         )
 
     model = make_model(
         input_dim,
         args.device,
         use_compile=args.compile,
-        time_aware_attention=not args.no_time_aware_attention,
+        time_aware_attention=not args.no_time_aware_attention and args.sequence_encoder == "gru",
+        sequence_encoder=args.sequence_encoder,
+        positional_layers=args.positional_layers,
+        positional_heads=args.positional_heads,
+        positional_dropout=args.positional_dropout,
     )
 
     # ---- Unweighted BCE on probabilities ----
@@ -539,12 +593,15 @@ def main():
         f.write(f"epochs={args.epochs}  batch_size={args.batch_size}  lr={args.lr}  weight_decay={args.weight_decay}  "
                 f"lambda_decov={args.lambda_decov}  amp={args.amp}  compile={args.compile}\n")
         f.write(
-            "input_dim={input_dim}  timestep={timestep}  append_masks={append_masks}  time_aware_attention={time_aware}\n\n"
-            .format(
+            "input_dim={input_dim}  timestep={timestep}  append_masks={append_masks}  time_aware_attention={time_aware}  "
+            "sequence_encoder={sequence_encoder}  positional_layers={pos_layers}  positional_heads={pos_heads}\n\n".format(
                 input_dim=input_dim,
                 timestep=args.timestep,
                 append_masks=args.append_masks,
-                time_aware=not args.no_time_aware_attention,
+                time_aware=not args.no_time_aware_attention and args.sequence_encoder == "gru",
+                sequence_encoder=args.sequence_encoder,
+                pos_layers=args.positional_layers,
+                pos_heads=args.positional_heads,
             )
         )
 
@@ -558,6 +615,9 @@ def main():
     print(f"   Learning rate: {args.lr}")
     print(f"   Using AMP: {args.amp}")
     print(f"   Using torch.compile: {args.compile}")
+    print(f"   Sequence encoder: {args.sequence_encoder}")
+    if args.sequence_encoder == "positional":
+        print(f"      Positional layers: {args.positional_layers}, heads: {args.positional_heads}, dropout: {args.positional_dropout}")
     print(f"   Metrics source: {metric_source}{' (papers_metrics_mode ON)' if args.papers_metrics_mode else ''}\n")
 
     for epoch in range(1, args.epochs + 1):

@@ -127,10 +127,14 @@ Each file includes:
 | `--diag` | Runs dataset and model diagnostics |
 | `--papers_metrics_mode` | Enables authors’ metrics printing |
 | `--no_time_aware_attention` | Turns off ConCare’s per-feature time decay to reproduce the paper’s ablation |
+| `--sequence_encoder positional` | Swaps the per-feature GRUs for a positional-encoding Transformer (ConCarePE) |
+| `--positional_layers / --positional_heads / --positional_dropout` | Tune the per-feature Transformer depth, width, and dropout when `--sequence_encoder=positional` |
 
 ---
 
-## 🧪 8. ConCare w/o Time-Aware (Paper Ablation)
+## 🧪 8. ConCare Ablations
+
+### ConCare w/o Time-Aware
 
 Section 3 (“Capturing the Impact of Time Interval”) of *Ma et al., AAAI 2020* defines a time-aware decay in the per-feature attention. To reproduce the ConCare (w/o Time-Aware) ablation from Table 1, disable that decay:
 
@@ -140,6 +144,19 @@ python train.py --epochs 100 --batch_size 256 --lr 1e-3 \
 ```
 
 Run the command twice (with and without the flag) while keeping caches, seeds, and hyper-parameters identical. The training log (`results/train_val_test_log_*.txt`) now records `time_aware_attention=False`, so you can diff AUROC/AUPRC lines directly. Expect the full model to approach the paper’s MIMIC-III scores (AUROC ≈ 0.870, AUPRC ≈ 0.532) and the w/o time-aware run to lag behind—matching the qualitative drop reported in the paper’s ablation discussion.
+
+### ConCarePE (Positional Encoder)
+
+The paper also reports **ConCarePE**, which replaces the per-feature GRU + time-aware attention with a positional-encoding Transformer head. Use the new flag suite to activate that variant:
+
+```bash
+python train.py --epochs 100 --batch_size 256 --lr 1e-3 \
+  --append_masks --amp \
+  --sequence_encoder positional \
+  --positional_layers 2 --positional_heads 4 --positional_dropout 0.1
+```
+
+This path automatically disables the time-aware decay (mirroring the authors’ ablation) and injects sinusoidal positional encodings before the Transformer. The log header now records `sequence_encoder=positional`, making it easy to trace runs back to the ConCarePE configuration.
 
 ---
 
