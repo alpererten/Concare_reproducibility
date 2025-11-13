@@ -20,7 +20,7 @@ from train_helpers import RAMDataset, pad_collate as ram_pad_collate
 from train_helpers import set_seed
 try:
     from worker_utils import resolve_num_workers
-except ImportError:  # pragma: no cover - package style
+except ImportError:  # pragma: no cover
     from .worker_utils import resolve_num_workers
 
 
