@@ -63,6 +63,12 @@ _MODEL_VARIANTS = {
         "description": "ConCareMC- ablation (visit embedding only, no DeCov)",
         "uses_decov": False,
     },
+    "concare_de_minus": {
+        "class_name": "ConCareDEMinus",
+        "modules": ("model_codes.ConCare_DE_minus", "ConCare_DE_minus"),
+        "description": "ConCareDE- ablation (removes demographic channel)",
+        "uses_decov": True,
+    },
 }
 
 
