@@ -1,0 +1,41 @@
+experiment_id: "2019-10-01_abl3_concare_de_minus"
+parent_id: "2019-10-01_aaai_baseline_concare"
+date: "2019-10-01"
+owner: "ma_et_al"
+dataset: "MIMIC-III + ESRD"
+task: "in-hospital-mortality"
+change: "Drop demographic feature channel while keeping multi-channel encoders and DeCov (ConCareDE−)"
+belief:
+  expected_final_gain: "neutral"
+  expected_stability_gain: "neutral"
+  expected_convergence_speed_gain: "neutral"
+config:
+  model_variant: "concare_de_minus"
+  seed_list: ["authors_bootstrap"]
+  cache: "authors_pipeline_bootstrap"
+  extra_flags: "--amp --papers_metrics_mode"
+metrics:
+  mimic_iii:
+    auroc: 0.8671
+    auprc: 0.5231
+    min_se_p: 0.5080
+    source: "Table 1, Ma et al. AAAI 2020"
+  esrd:
+    auroc: 0.8162
+    auprc: 0.3525
+    min_se_p: 0.3864
+    source: "Table 1, Ma et al. AAAI 2020"
+effect_size:
+  mimic_iii:
+    auroc_delta_vs_parent: -0.0031
+    auprc_delta_vs_parent: -0.0086
+    min_se_p_delta_vs_parent: -0.0002
+  esrd:
+    auroc_delta_vs_parent: -0.0047
+    auprc_delta_vs_parent: -0.0081
+    min_se_p_delta_vs_parent: 0.0011
+decision: "reject"
+notes: >
+  Removing demographics causes a small-but-measurable drop in AUROC/AUPRC on both datasets,
+  while the min(Se, P+) metric is almost unchanged. Because the feature channel is cheap to keep
+  (linear projections only) and helps on MIMIC-III, we keep demographics in the core architecture.

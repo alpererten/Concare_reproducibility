@@ -35,7 +35,9 @@ Regenerated_Project_Code/
 ├── metrics_authors.py        # Authors’ original metrics for parity check
 ├── model_codes/
 │   ├── ConCare_Model_v3.py   # Full ConCare (multi-channel + DeCov)
-│   └── ConCare_MC_minus.py   # ConCareMC- ablation (visit-level, no DeCov)
+│   ├── ConCare_MC_minus.py   # ConCareMC- ablation (visit-level, no DeCov)
+│   └── ConCare_DE_minus.py   # ConCareDE- ablation (full ConCare, no demographics)
+├── experiment_logs/          # YAML logger for structural experiments & ablations
 ├── data/
 │   ├── normalized_data_cache/  # Cached train/val/test .npz files
 │   └── demographic/            # Optional demographic CSVs per patient
@@ -133,7 +135,7 @@ Each file includes:
 | `--amp` | Enables mixed-precision training |
 | `--append_masks` | Adds time-series mask features |
 | `--lambda_decov` | Sets decorrelation loss weight (default = 1e-3) |
-| `--model_variant` | `concare_full` (default) or `concare_mc_minus` ablation |
+| `--model_variant` | `concare_full`, `concare_mc_minus`, or `concare_de_minus` |
 | `--num_workers` | Override DataLoader workers (`-1` auto, `0` serial) |
 | `--weight_decay` | Adds Adam weight decay |
 | `--compile` | Enables `torch.compile` (PyTorch 2.0+) |
@@ -168,6 +170,23 @@ python train.py \
   --early_stop_patience 15 --early_stop_min_delta 0.002 --device cuda
 ```
 
+### 📊 Reproducing Paper Ablations
+
+| Variant | Flag | Difference vs. full ConCare | Notes |
+|---------|------|-----------------------------|-------|
+| ConCareMC− | `--model_variant concare_mc_minus` | Removes multi-channel feature encoders and DeCov (single GRU over visits) | Matches paper's Ablation 2 |
+| ConCareDE− | `--model_variant concare_de_minus` | Keeps multi-channel + DeCov but drops the demographic feature channel | Matches paper's Ablation 3 |
+
+Sample command for ConCareDE− (paper ablation 3):
+
+```bash
+python train.py \
+  --model_variant concare_de_minus \
+  --epochs 100 --batch_size 256 --lr 1e-3 \
+  --append_masks --amp --papers_metrics_mode \
+  --device cuda --lambda_decov 1e-3
+```
+
 Each fold writes its own `train_val_test_log_<timestamp>_repX_foldY.txt`, and a consolidated `cv_summary_<timestamp>.txt` captures mean/std across folds plus authors-style statistics. For a single-run “early stop only” experiment, keep `--cv_folds 0` (default) but set the patience/min-delta knobs.
 
 ---
@@ -200,6 +219,15 @@ This will return all metrics including **AUC of ROC**, **AUC of PRC**, **Min(+P,
    python train.py --epochs 100 --batch_size 256 --lr 1e-3 --append_masks --amp --papers_metrics_mode
    ```
 4. Review logs in `results/`  
+
+---
+
+## 🗂️ 11. Structural Experiment Logger
+
+- Every ablation or major training change should be captured as a YAML file under `experiment_logs/`.
+- Copy `experiment_logs/template.yaml`, fill in the identifier, what changed, belief, measured metrics, effect sizes vs. the parent run, and the final decision.
+- See `experiment_logs/README.md` plus the pre-filled AAAI 2020 entries (baseline + Ablations 2/3) for concrete examples.
+- Attach these files (or excerpts) to PRs so reviewers can quickly understand experiment intent and outcomes.
 5. Compare authors’ vs local metrics for parity validation  
 
 ---

@@ -1,0 +1,41 @@
+experiment_id: "2019-10-01_abl2_concare_mc_minus"
+parent_id: "2019-10-01_aaai_baseline_concare"
+date: "2019-10-01"
+owner: "ma_et_al"
+dataset: "MIMIC-III + ESRD"
+task: "in-hospital-mortality"
+change: "Replace multi-channel encoders with single visit GRU and drop DeCov regularizer (ConCareMC−)"
+belief:
+  expected_final_gain: "negative"
+  expected_stability_gain: "small_positive"
+  expected_convergence_speed_gain: "moderate"
+config:
+  model_variant: "concare_mc_minus"
+  seed_list: ["authors_bootstrap"]
+  cache: "authors_pipeline_bootstrap"
+  extra_flags: "--amp --papers_metrics_mode"
+metrics:
+  mimic_iii:
+    auroc: 0.8594
+    auprc: 0.4902
+    min_se_p: 0.4947
+    source: "Table 1, Ma et al. AAAI 2020"
+  esrd:
+    auroc: 0.8101
+    auprc: 0.3498
+    min_se_p: 0.3766
+    source: "Table 1, Ma et al. AAAI 2020"
+effect_size:
+  mimic_iii:
+    auroc_delta_vs_parent: -0.0108
+    auprc_delta_vs_parent: -0.0415
+    min_se_p_delta_vs_parent: -0.0135
+  esrd:
+    auroc_delta_vs_parent: -0.0108
+    auprc_delta_vs_parent: -0.0108
+    min_se_p_delta_vs_parent: -0.0087
+decision: "reject"
+notes: >
+  Removing the feature-wise channels plus DeCov leads to clear drops in AUROC/AUPRC across both
+  datasets. While convergence is easier (fewer parameters), accuracy loss outweighs the simplicity
+  gains, so we keep the original multi-channel design.

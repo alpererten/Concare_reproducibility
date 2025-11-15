@@ -1,0 +1,40 @@
+# Copy this file when logging a new experiment and update each field.
+experiment_id: "YYYY-MM-DD_<slug>_XX"
+parent_id: "<parent-experiment-id-or-null>"
+date: "YYYY-MM-DD"
+owner: "<your name or initials>"
+dataset: "MIMIC-III in-hospital mortality"
+task: "in-hospital-mortality"
+change: "<succinct description of the code/config change>"
+belief:
+  expected_final_gain: "neutral"
+  expected_stability_gain: "neutral"
+  expected_convergence_speed_gain: "neutral"
+config:
+  model_variant: "concare_full"
+  seed_list: [42]
+  cache: "data/normalized_data_cache"
+  extra_flags: "--amp --papers_metrics_mode"
+metrics:
+  mimic_iii:
+    auroc: null
+    auprc: null
+    min_se_p: null
+    source: "<log file path or link>"
+  esrd:
+    auroc: null
+    auprc: null
+    min_se_p: null
+    source: "<log file path or link>"
+effect_size:
+  mimic_iii:
+    auroc_delta_vs_parent: null
+    auprc_delta_vs_parent: null
+    min_se_p_delta_vs_parent: null
+  esrd:
+    auroc_delta_vs_parent: null
+    auprc_delta_vs_parent: null
+    min_se_p_delta_vs_parent: null
+decision: "needs_followup"
+notes: >
+  Summarize qualitative takeaways, anomalies, or TODOs.
