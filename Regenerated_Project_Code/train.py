@@ -16,8 +16,14 @@ import torch
 from torch.utils.data import DataLoader
 from torch import amp
 from datetime import datetime
+from typing import Dict, List, Optional
 from train_helpers import RAMDataset, pad_collate as ram_pad_collate
 from train_helpers import set_seed
+try:
+    from sklearn.model_selection import StratifiedKFold, train_test_split
+except Exception:  # pragma: no cover - optional dependency
+    StratifiedKFold = None
+    train_test_split = None
 try:
     from worker_utils import resolve_num_workers
 except ImportError:  # pragma: no cover
@@ -101,6 +107,20 @@ def build_argparser():
                    help="DataLoader workers per process (-1 auto, 0 disables multiprocessing)")
     p.add_argument("--model_variant", choices=sorted(_MODEL_VARIANTS.keys()), default="concare_full",
                    help="Choose which ConCare variant to train (full model vs. ConCareMC- ablation)")
+    p.add_argument("--cv_folds", type=int, default=0,
+                   help="Number of folds for repeated cross-validation (0 disables CV mode)")
+    p.add_argument("--cv_repeats", type=int, default=1,
+                   help="How many random repetitions of the cross-validation to run")
+    p.add_argument("--cv_pool_splits", type=str, default="train,val",
+                   help="Comma-separated cache splits to pool together for CV (e.g., 'train,val,test')")
+    p.add_argument("--cv_val_ratio", type=float, default=0.1,
+                   help="Portion of the training portion inside each fold that is used for validation")
+    p.add_argument("--cv_seed", type=int, default=42,
+                   help="Seed used to shuffle folds/repetitions for CV mode")
+    p.add_argument("--early_stop_patience", type=int, default=0,
+                   help="Stop training if val AUPRC fails to improve after this many epochs (0 disables)")
+    p.add_argument("--early_stop_min_delta", type=float, default=0.0,
+                   help="Minimum AUPRC improvement to reset patience when early stopping is enabled")
 
     # -------- Parity mode options (authors' exact tensors) --------
     p.add_argument("--parity_mode", action="store_true",
@@ -404,14 +424,15 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
     model.train()
     total_loss = 0.0
     probs, labels = [], []
+    device_type = "cuda" if isinstance(device, str) and "cuda" in device else "cpu"
     for batch_idx, (X, D, y) in enumerate(loader):
         X, D, y = X.to(device, non_blocking=True), D.to(device, non_blocking=True), y.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
         if scaler:
-            with amp.autocast("cuda", dtype=torch.bfloat16):
+            with amp.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=True):
                 logits, decov = model(X, D)
                 decov = _sanitize_decov(decov)
-            with amp.autocast(enabled=False):
+            with amp.autocast(device_type=device_type, enabled=False):
                 bce = criterion(logits.float(), y.float())
             loss = bce + lambda_decov * decov.float()
             if not torch.isfinite(loss):
@@ -515,11 +536,21 @@ def main():
     print("\n[INFO] Preparing RAM datasets")
     _ensure_materialized(args)
 
+    if args.cv_folds and args.cv_folds > 1:
+        _run_cross_validation(args, variant_meta, metric_fn, metric_source)
+        return
 
     train_ds = RAMDataset("train", cache_dir=CACHE_DIR)
     val_ds   = RAMDataset("val",   cache_dir=CACHE_DIR)
     test_ds  = RAMDataset("test",  cache_dir=CACHE_DIR)
+    run_training_cycle(args, variant_meta, metric_fn, metric_source, train_ds, val_ds, test_ds)
 
+
+def run_training_cycle(args, variant_meta, metric_fn, metric_source,
+                       train_ds, val_ds, test_ds, fold_tag: Optional[str] = None,
+                       run_diag: bool = True):
+    if fold_tag:
+        print(f"\n===== Fold {fold_tag} =====")
     X0, _, _ = train_ds[0]; input_dim = X0.shape[1]
 
     workers, use_workers = resolve_num_workers(args.num_workers)
@@ -537,7 +568,7 @@ def main():
                               num_workers=workers, pin_memory=True, persistent_workers=use_workers,
                               prefetch_factor=2 if use_workers else None)
 
-    if args.diag:
+    if args.diag and run_diag:
         diag_preflight(train_ds, args.device, ram_pad_collate, args)
 
     model = make_model(input_dim, args.device, args, use_compile=args.compile)
@@ -555,21 +586,26 @@ def main():
 
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.results_dir, exist_ok=True)
-    best_path = os.path.join(args.save_dir, "best_concare.pt")
+    fold_suffix = f"_{fold_tag}" if fold_tag else ""
+    best_path = os.path.join(args.save_dir, f"best_concare{fold_suffix}.pt")
     best_auprc = -1.0
     best_epoch = -1
+    epochs_no_improve = 0
 
-    # Prepare timestamped results log for this run
     run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    results_path = os.path.join(args.results_dir, f"train_val_test_log_{run_timestamp}.txt")
+    results_path = os.path.join(args.results_dir, f"train_val_test_log_{run_timestamp}{fold_suffix}.txt")
     with open(results_path, "w") as f:
         f.write(f"=== ConCare Training Log Started ({run_timestamp}) ===\n")
+        if fold_tag:
+            f.write(f"cv_fold={fold_tag}\n")
         f.write(f"epochs={args.epochs}  batch_size={args.batch_size}  lr={args.lr}  weight_decay={args.weight_decay}  "
                 f"lambda_decov={args.lambda_decov}  effective_lambda={target_lambda}  amp={args.amp}  compile={args.compile}\n")
         f.write(f"model_variant={args.model_variant} ({variant_meta['description']})  uses_decov={variant_meta['uses_decov']}\n")
         f.write(f"input_dim={input_dim}  timestep={args.timestep}  append_masks={args.append_masks}\n\n")
 
     print(f"\n🚀 Starting training at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if fold_tag:
+        print(f"   Fold tag: {fold_tag}")
     print(f"   Input dimension: {input_dim}")
     print(f"   Model variant: {args.model_variant} ({variant_meta['description']})")
     print(f"   Batch size: {args.batch_size}")
@@ -587,31 +623,39 @@ def main():
         print(f"Epoch {epoch:03d} | Train loss {tr['loss']:.4f} AUPRC {tr['auprc']:.4f} AUROC {tr['auroc']:.4f} | "
               f"Val loss {va['loss']:.4f} AUPRC {va['auprc']:.4f} AUROC {va['auroc']:.4f}")
 
-        # choose threshold that maximizes F1 on current val
         thr, f1, p, r = best_threshold_from_probs(yv_true, yv_prob)
         print(f"          Val@thr={thr:.2f}  F1={f1:.4f}  P={p:.4f}  R={r:.4f}")
 
-        # --- Authors-style validation metrics on the SAME predictions ---
+        authors_val = None
         if authors_print_metrics_binary is not None:
-            # Flip so authors' column-1 corresponds to positive class score
             auth_prob = 1.0 - yv_prob
             authors_val = authors_print_metrics_binary(yv_true, auth_prob, verbose=0)
             print(f"[AUTHORS] Val acc={authors_val['acc']:.4f} "
                   f"AUROC={authors_val['auroc']:.4f} AUPRC={authors_val['auprc']:.4f} "
                   f"MinPSE={authors_val['minpse']:.4f} F1={authors_val['f1_score']:.4f}")
 
-        # track best by AUPRC and log to file (include authors metrics if available)
-        if va["auprc"] > best_auprc:
+        improved = va["auprc"] > (best_auprc + args.early_stop_min_delta)
+        if improved:
             best_auprc = va["auprc"]
             best_epoch = epoch
+            epochs_no_improve = 0
             torch.save({"model": model.state_dict(), "epoch": epoch}, best_path)
             with open(results_path, "a") as f:
                 f.write(f"New best model at epoch {epoch}: val AUPRC={va['auprc']:.4f}, AUROC={va['auroc']:.4f}, "
                         f"loss={va['loss']:.4f}, thr={thr:.2f}, F1={f1:.4f}, P={p:.4f}, R={r:.4f}\n")
-                if authors_print_metrics_binary is not None:
+                if authors_val is not None:
                     f.write(f"[AUTHORS] acc={authors_val['acc']:.4f} auroc={authors_val['auroc']:.4f} "
                             f"auprc={authors_val['auprc']:.4f} minpse={authors_val['minpse']:.4f} "
                             f"f1={authors_val['f1_score']:.4f}\n")
+        else:
+            epochs_no_improve += 1
+
+        if args.early_stop_patience > 0 and epochs_no_improve >= args.early_stop_patience:
+            print(f"[EARLY STOP] No val AUPRC improvement for {args.early_stop_patience} epochs. Stopping at epoch {epoch}.")
+            with open(results_path, "a") as f:
+                f.write(f"[EARLY STOP] Triggered at epoch {epoch} "
+                        f"(best_epoch={best_epoch}, best_val_auprc={best_auprc:.4f})\n")
+            break
 
     print(f"\n📊 Evaluating best checkpoint on TEST set")
     ckpt = torch.load(best_path, map_location=args.device) if os.path.exists(best_path) else None
@@ -620,7 +664,6 @@ def main():
 
     test_metrics, yt_true, yt_prob = evaluate(model, test_loader, args.device, criterion, metric_fn)
 
-    # Enrich with MINPSE summary around the best precision and recall balance if available
     if ours_minpse is not None:
         try:
             mp = ours_minpse(yt_true, yt_prob)
@@ -642,7 +685,6 @@ def main():
         except Exception:
             print(f"{k:>8}: {v}")
 
-    # Use best validation threshold for the final "authors-style" operating point
     va_full, yv_true_full, yv_prob_full = evaluate(model, val_loader, args.device, criterion, metric_fn)
     best_thr, _, _, _ = best_threshold_from_probs(yv_true_full, yv_prob_full)
 
@@ -659,7 +701,7 @@ def main():
     print(f"  minpse: {minpse_best:.4f}")
     print(f"   thr_used: {best_thr:.2f}")
 
-    # --- Authors-style full test metrics from authors' function ---
+    authors_test = None
     if authors_print_metrics_binary is not None:
         auth_prob_test = 1.0 - yt_prob
         authors_test = authors_print_metrics_binary(yt_true, auth_prob_test, verbose=0)
@@ -667,7 +709,6 @@ def main():
               f"AUROC={authors_test['auroc']:.4f} AUPRC={authors_test['auprc']:.4f} "
               f"MinPSE={authors_test['minpse']:.4f} F1={authors_test['f1_score']:.4f}")
 
-    # Optional fixed operating point for easy comparison
     thr_fixed = 0.66
     acc66, prec66, rec66, f1_66 = print_thresholded_report(yt_true, yt_prob, thr_fixed, header="📊 Test @thr=0.66")
     minpse_66 = minpse_from_pr(prec66, rec66)
@@ -675,7 +716,6 @@ def main():
           f"auprc={test_metrics.get('auprc', float('nan')):.4f} "
           f"minpse={minpse_66:.4f}")
 
-    # Save final test results to the same timestamped log (include authors metrics if available)
     with open(results_path, "a") as f:
         f.write("\n=== Final Test Results ===\n")
         f.write(f"best_epoch={best_epoch}  best_val_auprc={best_auprc:.4f}\n")
@@ -689,7 +729,7 @@ def main():
         f.write("\n-- authors-style @best_val_thr --\n")
         f.write(f"acc={acc_best:.4f}  f1={f1_best:.4f}  auroc={test_metrics.get('auroc', float('nan')):.4f}  "
                 f"auprc={test_metrics.get('auprc', float('nan')):.4f}  minpse={minpse_best:.4f}  thr_used={best_thr:.2f}\n")
-        if authors_print_metrics_binary is not None:
+        if authors_test is not None:
             f.write("\n=== AUTHORS-STYLE TEST METRICS ===\n")
             for k in ["acc","auroc","auprc","minpse","f1_score","prec0","prec1","rec0","rec1"]:
                 try:
@@ -702,6 +742,182 @@ def main():
 
     print(f"\n[INFO] Saved run log to {results_path}")
     print("\n✅ Training completed successfully")
+
+    summary = {
+        "fold_tag": fold_tag,
+        "results_path": results_path,
+        "best_epoch": best_epoch,
+        "best_val_auprc": best_auprc,
+        "best_thr": best_thr,
+        "acc_best": acc_best,
+        "f1_best": f1_best,
+        "minpse_best": minpse_best,
+        "test_metrics": test_metrics,
+    }
+    if authors_test is not None:
+        summary["authors_test"] = authors_test
+    return summary
+
+
+def _load_cv_pool(cache_dir: str, splits: List[str]) -> Dict[str, np.ndarray]:
+    if not splits:
+        raise ValueError("cv_pool_splits must specify at least one split")
+    Xs, ys, Ds = [], [], []
+    ds_present = True
+    for split in splits:
+        split = split.strip()
+        if not split:
+            continue
+        path = Path(cache_dir) / f"{split}.npz"
+        if not path.exists():
+            raise FileNotFoundError(f"Cache split '{split}' not found at {path}")
+        arr = np.load(path, allow_pickle=True)
+        X_chunk = list(arr["X"])
+        y_chunk = list(arr["y"].astype(np.float32))
+        Xs.extend(X_chunk)
+        ys.extend(y_chunk)
+        if ds_present and "D" in arr.files:
+            Ds.extend(list(arr["D"]))
+        elif "D" not in arr.files:
+            ds_present = False
+            Ds = []
+    bundle = {
+        "X": np.array(Xs, dtype=object),
+        "y": np.array(ys, dtype=np.float32),
+    }
+    if ds_present and Ds:
+        bundle["D"] = np.array(Ds, dtype=np.float32)
+    print(f"[CV] Loaded {len(ys)} stays from splits {splits} (cache_dir={cache_dir})")
+    return bundle
+
+
+def _mean_std(values: List[float]) -> Optional[tuple]:
+    if not values:
+        return None
+    arr = np.array(values, dtype=np.float64)
+    return float(arr.mean()), float(arr.std(ddof=0))
+
+
+def _summarize_cv_results(summaries: List[Dict], args):
+    if not summaries:
+        print("[CV] No runs to summarize.")
+        return
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    summary_path = os.path.join(args.results_dir, f"cv_summary_{timestamp}.txt")
+    metric_lists: Dict[str, List[float]] = {}
+    thresh_lists: Dict[str, List[float]] = {}
+    author_lists: Dict[str, List[float]] = {}
+
+    def _push(target, key, value):
+        if value is None:
+            return
+        try:
+            val = float(value)
+        except Exception:
+            return
+        if np.isnan(val):
+            return
+        target.setdefault(key, []).append(val)
+
+    def _fmt(value):
+        try:
+            return f"{float(value):.4f}"
+        except Exception:
+            return "nan"
+
+    with open(summary_path, "w") as f:
+        f.write(f"=== Repeated CV Summary ({timestamp}) ===\n")
+        for idx, summary in enumerate(summaries, 1):
+            fold_tag = summary.get("fold_tag") or f"run{idx}"
+            test_metrics = summary.get("test_metrics", {})
+            acc_best = summary.get("acc_best")
+            f1_best = summary.get("f1_best")
+            minpse_best = summary.get("minpse_best")
+            auroc = test_metrics.get("auroc")
+            auprc = test_metrics.get("auprc")
+            loss = test_metrics.get("loss")
+            minpse = test_metrics.get("minpse")
+            f.write(f"{fold_tag}: auroc={_fmt(auroc)} "
+                    f"auprc={_fmt(auprc)} "
+                    f"loss={_fmt(loss)} "
+                    f"minpse={_fmt(minpse)} "
+                    f"acc={_fmt(acc_best)} "
+                    f"f1={_fmt(f1_best)} "
+                    f"thr={_fmt(summary.get('best_thr'))}\n")
+
+            _push(metric_lists, "auroc", auroc)
+            _push(metric_lists, "auprc", auprc)
+            _push(metric_lists, "loss", loss)
+            _push(metric_lists, "minpse", minpse)
+            _push(thresh_lists, "acc", acc_best)
+            _push(thresh_lists, "f1", f1_best)
+            _push(thresh_lists, "minpse", minpse_best)
+
+            authors_test = summary.get("authors_test")
+            if authors_test:
+                for key in ["acc", "auroc", "auprc", "minpse", "f1_score"]:
+                    _push(author_lists, key, authors_test.get(key))
+
+        f.write("\n=== Aggregate (threshold-free) ===\n")
+        for key in sorted(metric_lists.keys()):
+            stats = _mean_std(metric_lists[key])
+            if stats:
+                f.write(f"{key}: mean={stats[0]:.4f} std={stats[1]:.4f}\n")
+
+        f.write("\n=== Aggregate (thresholded @best_val) ===\n")
+        for key in sorted(thresh_lists.keys()):
+            stats = _mean_std(thresh_lists[key])
+            if stats:
+                f.write(f"{key}: mean={stats[0]:.4f} std={stats[1]:.4f}\n")
+
+        if author_lists:
+            f.write("\n=== Aggregate (authors metrics) ===\n")
+            for key in sorted(author_lists.keys()):
+                stats = _mean_std(author_lists[key])
+                if stats:
+                    f.write(f"{key}: mean={stats[0]:.4f} std={stats[1]:.4f}\n")
+
+    print(f"[CV] Saved summary to {summary_path}")
+
+
+def _run_cross_validation(args, variant_meta, metric_fn, metric_source):
+    if StratifiedKFold is None or train_test_split is None:
+        raise ImportError("scikit-learn is required for cross-validation mode. Please install scikit-learn.")
+    if args.cv_folds <= 1:
+        raise ValueError("--cv_folds must be > 1 to enable cross-validation")
+    if not (0.0 < args.cv_val_ratio < 1.0):
+        raise ValueError("--cv_val_ratio must be between 0 and 1")
+    split_names = [s.strip() for s in args.cv_pool_splits.split(",") if s.strip()]
+    pool_bundle = _load_cv_pool(args.cache_dir, split_names)
+    y_all = pool_bundle["y"]
+    total = len(y_all)
+    print(f"[CV] Starting repeated CV with {args.cv_folds} folds x {args.cv_repeats} repeats ({total} stays)")
+    summaries = []
+    for repeat in range(args.cv_repeats):
+        skf = StratifiedKFold(n_splits=args.cv_folds, shuffle=True,
+                              random_state=args.cv_seed + repeat)
+        for fold_idx, (trainval_idx, test_idx) in enumerate(skf.split(np.zeros(total), y_all)):
+            fold_tag = f"rep{repeat+1}_fold{fold_idx+1}"
+            print(f"[CV] Preparing {fold_tag}: train+val={len(trainval_idx)} test={len(test_idx)}")
+            train_idx, val_idx = train_test_split(
+                trainval_idx,
+                test_size=args.cv_val_ratio,
+                stratify=y_all[trainval_idx],
+                random_state=args.cv_seed + (repeat * args.cv_folds) + fold_idx,
+            )
+            set_seed(args.cv_seed + (repeat * args.cv_folds) + fold_idx)
+            train_ds = RAMDataset(split=None, cache_dir=args.cache_dir, data_bundle=pool_bundle, indices=train_idx)
+            val_ds   = RAMDataset(split=None, cache_dir=args.cache_dir, data_bundle=pool_bundle, indices=val_idx)
+            test_ds  = RAMDataset(split=None, cache_dir=args.cache_dir, data_bundle=pool_bundle, indices=test_idx)
+            summary = run_training_cycle(
+                args, variant_meta, metric_fn, metric_source,
+                train_ds, val_ds, test_ds,
+                fold_tag=fold_tag,
+                run_diag=(repeat == 0 and fold_idx == 0),
+            )
+            summaries.append(summary)
+    _summarize_cv_results(summaries, args)
 
 
 if __name__ == "__main__":

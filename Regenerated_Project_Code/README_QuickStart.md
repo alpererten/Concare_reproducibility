@@ -142,7 +142,37 @@ Each file includes:
 
 ---
 
-## 📈 8. Reproducing Authors’ Metrics Only
+## 🔁 8. Repeated Cross-Validation & Early Stopping
+
+Need to match the paper’s *mean ± std* reporting? The trainer now supports repeated stratified K-fold CV plus configurable early stopping.
+
+| Flag | Description |
+|------|-------------|
+| `--cv_folds` | Number of folds (>1 enables CV mode) |
+| `--cv_repeats` | How many random reshuffles to run |
+| `--cv_pool_splits` | Cached splits to pool before folding (default `train,val`) |
+| `--cv_val_ratio` | Portion of each training fold carved out for validation |
+| `--cv_seed` | Seed for split reproducibility |
+| `--early_stop_patience` | Epochs to wait for val AUPRC improvement (0 disables) |
+| `--early_stop_min_delta` | Minimum gain in AUPRC to reset patience |
+
+Example (ConCareMC−, AMP, 3×5 repeated CV, patience 15):
+
+```bash
+python train.py \
+  --model_variant concare_mc_minus \
+  --epochs 100 --batch_size 256 --lr 1e-3 \
+  --append_masks --amp --papers_metrics_mode \
+  --cv_folds 10 --cv_repeats 3 --cv_val_ratio 0.1 \
+  --cv_pool_splits train,val \
+  --early_stop_patience 15 --early_stop_min_delta 0.002 --device cuda
+```
+
+Each fold writes its own `train_val_test_log_<timestamp>_repX_foldY.txt`, and a consolidated `cv_summary_<timestamp>.txt` captures mean/std across folds plus authors-style statistics. For a single-run “early stop only” experiment, keep `--cv_folds 0` (default) but set the patience/min-delta knobs.
+
+---
+
+## 📈 9. Reproducing Authors’ Metrics Only
 
 To compute the authors’ metrics on saved predictions:
 
@@ -158,7 +188,7 @@ This will return all metrics including **AUC of ROC**, **AUC of PRC**, **Min(+P,
 
 ---
 
-## ✅ 9. Typical Workflow Summary
+## ✅ 10. Typical Workflow Summary
 
 1. Prepare preprocessed MIMIC-III data  
 2. Generate cached datasets:
