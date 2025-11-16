@@ -397,41 +397,58 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
     model.train()
     total_loss = 0.0
     probs, labels = [], []
+
     for batch_idx, (X, D, y) in enumerate(loader):
         X, D, y = X.to(device, non_blocking=True), D.to(device, non_blocking=True), y.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
+
         if scaler:
+            # 1) Use AMP only for the forward pass
             with amp.autocast("cuda", dtype=torch.bfloat16):
                 logits, decov = model(X, D)
                 decov = _sanitize_decov(decov)
-                bce = criterion(logits, y)
-                loss = bce + lambda_decov * decov
+
+            # 2) Compute BCE in full float32, with matching dtypes
+            logits_32 = logits.float()
+            y_32 = y.float()
+            bce = criterion(logits_32, y_32)
+            loss = bce + lambda_decov * decov
+
             if not torch.isfinite(loss):
                 for g in optimizer.param_groups:
-                    g['lr'] = max(g['lr'] * 0.5, 1e-6)
+                    g["lr"] = max(g["lr"] * 0.5, 1e-6)
                 if batch_idx % 50 == 0:
-                    print(f"[WARN] Non-finite loss at epoch {epoch} batch {batch_idx}; "
-                          f"decov={float(decov):.6f} bce={float(bce):.6f}; "
-                          f"lowering LR to {optimizer.param_groups[0]['lr']:.2e} and skipping batch")
+                    print(
+                        f"[WARN] Non-finite loss at epoch {epoch} batch {batch_idx}; "
+                        f"decov={float(decov):.6f} bce={float(bce):.6f}; "
+                        f"lowering LR to {optimizer.param_groups[0]['lr']:.2e} and skipping batch"
+                    )
                 scaler.update()
                 continue
+
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer); scaler.update()
+            scaler.step(optimizer)
+            scaler.update()
+
         else:
             logits, decov = model(X, D)
             decov = _sanitize_decov(decov)
             bce = criterion(logits, y)
             loss = bce + lambda_decov * decov
+
             if not torch.isfinite(loss):
                 for g in optimizer.param_groups:
-                    g['lr'] = max(g['lr'] * 0.5, 1e-6)
+                    g["lr"] = max(g["lr"] * 0.5, 1e-6)
                 if batch_idx % 50 == 0:
-                    print(f"[WARN] Non-finite loss at epoch {epoch} batch {batch_idx}; "
-                          f"decov={float(decov):.6f} bce={float(bce):.6f}; "
-                          f"lowering LR to {optimizer.param_groups[0]['lr']:.2e} and skipping batch")
+                    print(
+                        f"[WARN] Non-finite loss at epoch {epoch} batch {batch_idx}; "
+                        f"decov={float(decov):.6f} bce={float(bce):.6f}; "
+                        f"lowering LR to {optimizer.param_groups[0]['lr']:.2e} and skipping batch"
+                    )
                 continue
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
@@ -439,6 +456,7 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
         total_loss += loss.item() * X.size(0)
         probs.append(logits.detach().to(torch.float32).cpu().numpy())
         labels.append(y.detach().to(torch.float32).cpu().numpy())
+
         if batch_idx == 0:
             print(f"[DIAG] Epoch {epoch} batch {batch_idx} decov={float(decov):.6f} bce={float(bce):.6f}")
 
