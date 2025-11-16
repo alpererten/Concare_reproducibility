@@ -64,13 +64,13 @@ This creates normalized `.npz` files under `data/normalized_data_cache/`:
 Run standard training (RAM-based, AMP enabled):
 
 ```bash
-python train.py --epochs 100 --batch_size 256 --lr 1e-3 --append_masks --amp --papers_metrics_mode
+python train.py --epochs 100 --batch_size 256 --lr 1e-3 
 ```
 
 This will:
 - Train using cached data for faster I/O  
 - Save the **best model** to `trained_models/best_concare.pt`  
-- Log **both local and authors’ metrics** (AUROC, AUPRC, MinPSE, F1, etc.)  
+- Log **performance metrics** (AUROC, AUPRC, MinPSE, F1, etc.)  
 - Save results in:
   ```
   results/train_val_test_log_<timestamp>.txt

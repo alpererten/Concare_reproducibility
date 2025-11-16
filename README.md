@@ -1,2 +1,1 @@
-# Concare_reproducibility
-Reproduction of the ConCare model (AAAI 2020) on MIMIC-III dataset
+# Please see README_Quikcstart under Regenerated_Project_Code/ folder for instructions
