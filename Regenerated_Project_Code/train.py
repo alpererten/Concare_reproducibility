@@ -9,6 +9,7 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 import argparse
 import importlib
 import glob
+import json
 import shutil
 from pathlib import Path
 import numpy as np
@@ -72,6 +73,51 @@ _MODEL_VARIANTS = {
 }
 
 
+def _discretizer_config_path() -> Path:
+    return Path(__file__).resolve().parent / "data" / "discretizer_config.json"
+
+
+def _load_discretizer_feature_dims():
+    """
+    Returns (value_dim, num_channels) from the discretizer config if available.
+    """
+    cfg_path = _discretizer_config_path()
+    try:
+        with cfg_path.open("r") as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        return None
+
+    value_dim = 0
+    for ch in cfg["id_to_channel"]:
+        if cfg["is_categorical_channel"][ch]:
+            value_dim += len(cfg["possible_values"][ch])
+        else:
+            value_dim += 1
+    num_channels = len(cfg["id_to_channel"])
+    return value_dim, num_channels
+
+
+def _infer_mask_dim(input_dim: int, append_masks: bool):
+    dims = _load_discretizer_feature_dims()
+    if dims is None:
+        # Fall back to assuming no explicit mask columns if config is missing.
+        return 0, input_dim
+
+    value_dim, channel_count = dims
+    if append_masks:
+        expected = value_dim + channel_count
+        if input_dim != expected:
+            print(f"[WARN] Expected {expected} input dims from discretizer but received {input_dim}. "
+                  f"Using residual value ({input_dim - value_dim}) as mask_dim.")
+            mask_dim = max(input_dim - value_dim, 0)
+        else:
+            mask_dim = channel_count
+    else:
+        mask_dim = max(input_dim - value_dim, 0)
+    return mask_dim, value_dim
+
+
 def _load_model_class(variant_key: str):
     meta = _MODEL_VARIANTS.get(variant_key)
     if meta is None:
@@ -113,6 +159,8 @@ def build_argparser():
                    help="DataLoader workers per process (-1 auto, 0 disables multiprocessing)")
     p.add_argument("--model_variant", choices=sorted(_MODEL_VARIANTS.keys()), default="concare_full",
                    help="Choose which ConCare variant to train (full model vs. ConCareMC- ablation)")
+    p.add_argument("--missing_aware_extension", action="store_true",
+                   help="Enable SMART-style missing-aware attention extension for ConCare")
     p.add_argument("--cv_folds", type=int, default=0,
                    help="Number of folds for repeated cross-validation (0 disables CV mode)")
     p.add_argument("--cv_repeats", type=int, default=1,
@@ -329,8 +377,18 @@ def _ensure_materialized(args):
 def make_model(input_dim, device, args, use_compile=False):
     meta = _MODEL_VARIANTS[args.model_variant]
     ModelClass = _load_model_class(args.model_variant)
+    extra_kwargs = {}
+    mask_dim = base_value_dim = None
+    if meta["class_name"] == "ConCare" and args.missing_aware_extension:
+        mask_dim, base_value_dim = _infer_mask_dim(input_dim, args.append_masks)
+        extra_kwargs["mask_dim"] = mask_dim
+        extra_kwargs["base_value_dim"] = base_value_dim
+        extra_kwargs["enable_missing_aware"] = True
+    elif meta["class_name"] == "ConCare":
+        extra_kwargs["enable_missing_aware"] = False
     print(f"[INFO] Creating model variant='{args.model_variant}' ({meta['description']}) "
-          f"with input_dim={input_dim}")
+          f"with input_dim={input_dim}"
+          + (f" (value_dim≈{base_value_dim}, mask_dim={mask_dim})" if mask_dim is not None else ""))
     model = ModelClass(
         input_dim=input_dim,
         hidden_dim=64,
@@ -340,6 +398,7 @@ def make_model(input_dim, device, args, use_compile=False):
         output_dim=1,
         keep_prob=0.5,
         demographic_dim=12,
+        **extra_kwargs,
     ).to(device)
     if use_compile:
         try:

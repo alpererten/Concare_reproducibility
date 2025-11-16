@@ -1,7 +1,77 @@
+import json
+import math
+import warnings
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
+
+_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "data" / "discretizer_config.json"
+
+
+def _load_value_channel_mapping(config_path: Path):
+    """
+    Returns (channel_names, value_to_channel_index_list).
+    """
+    try:
+        with config_path.open("r") as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        warnings.warn(f"Discretizer config not found at {config_path}. Falling back to uniform channel mapping.")
+        return [], []
+
+    channel_names = cfg["id_to_channel"]
+    mapping = []
+    for idx, ch in enumerate(channel_names):
+        if cfg["is_categorical_channel"][ch]:
+            width = len(cfg["possible_values"][ch])
+        else:
+            width = 1
+        mapping.extend([idx] * width)
+    return channel_names, mapping
+
+
+class MissingAwareTemporalAttention(nn.Module):
+    """
+    Temporal attention with SMART-style mask biasing.
+    Observed timesteps receive a larger additive bias than missing ones.
+    """
+    def __init__(self, hidden_dim, attention_hidden_dim=16):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.attention_hidden_dim = attention_hidden_dim
+        self.query_proj = nn.Linear(hidden_dim, attention_hidden_dim)
+        self.key_proj = nn.Linear(hidden_dim, attention_hidden_dim)
+        nn.init.kaiming_uniform_(self.query_proj.weight, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.key_proj.weight, a=math.sqrt(5))
+        self.obs_bias = nn.Parameter(torch.tensor(2.0))
+        self.miss_bias = nn.Parameter(torch.tensor(0.0))
+        self.softmax = nn.Softmax(dim=1)
+
+    def forward(self, H, mask):
+        """
+        Args:
+            H: [B, T, hidden_dim] GRU outputs for a single feature dimension.
+            mask: [B, T] float/bool mask (1 if observed).
+        Returns:
+            context: [B, hidden_dim]
+            attn:    [B, T] attention weights over timesteps
+        """
+        if mask.dim() != 2 or mask.size(1) != H.size(1):
+            raise ValueError("Mask must be [B, T] to match hidden states.")
+        mask = mask.float()
+        q = self.query_proj(H[:, -1, :])  # [B, attn_dim]
+        k = self.key_proj(H)              # [B, T, attn_dim]
+        scores = torch.matmul(q.unsqueeze(1), k.transpose(1, 2)).squeeze(1)
+        scores = scores / math.sqrt(self.attention_hidden_dim)
+
+        bias = torch.where(mask > 0.5, self.obs_bias, self.miss_bias)
+        scores = scores + bias
+
+        alpha = self.softmax(scores)
+        context = torch.bmm(alpha.unsqueeze(1), H).squeeze(1)
+        return context, alpha
 
 
 class SingleAttentionPerFeatureNew(nn.Module):
@@ -65,9 +135,9 @@ class SingleAttentionPerFeatureNew(nn.Module):
 
 class FinalAttentionQKV(nn.Module):
     """
-    Final attention over feature embeddings.
+    Final attention over feature embeddings with optional mask-based biasing.
     """
-    def __init__(self, hidden_dim, attention_hidden_dim, attention_type='mul', dropout=0.5):
+    def __init__(self, hidden_dim, attention_hidden_dim, attention_type='mul', dropout=0.5, use_mask_bias=True):
         super().__init__()
         self.attention_type = attention_type
         self.attention_hidden_dim = attention_hidden_dim
@@ -87,12 +157,14 @@ class FinalAttentionQKV(nn.Module):
         nn.init.kaiming_uniform_(self.W_out.weight, a=math.sqrt(5))
 
         self.dropout = nn.Dropout(p=dropout)
+        self.mask_scale = nn.Parameter(torch.tensor(1.0)) if use_mask_bias else None
         self.tanh = nn.Tanh()
         self.softmax = nn.Softmax(dim=1)
 
-    def forward(self, x):
+    def forward(self, x, feature_mask=None):
         """
-        x: [B, F+1, hidden_dim] where F is number of features and +1 is demographics
+        x: [B, N, hidden_dim] feature embeddings (including demographics if appended)
+        feature_mask: optional [B, N] tensor with observation coverage per feature.
         Returns: pooled context [B, hidden_dim] and weights [B, F+1]
         """
         B, N, _ = x.size()
@@ -108,6 +180,11 @@ class FinalAttentionQKV(nn.Module):
             e = self.W_out(h).squeeze(-1)                     # [B, N]
         else:
             raise ValueError(f"Unknown attention_type: {self.attention_type}")
+
+        if feature_mask is not None and self.mask_scale is not None:
+            if feature_mask.shape != (B, N):
+                raise ValueError(f"feature_mask must be shape [B, {N}] but got {feature_mask.shape}")
+            e = e + self.mask_scale * feature_mask
 
         alpha = self.softmax(e)  # [B, N]
         alpha = self.dropout(alpha)
@@ -152,14 +229,17 @@ class MultiHeadedAttention(nn.Module):
         x = self.o_proj(x)  # [B, N, d_model]
 
         # DeCov regularization across features
-        decov_loss = 0.0
+        decov_loss = x.new_tensor(0.0)
         contexts = x.transpose(0, 1).transpose(1, 2)  # [N, d_model, B]
-        for i in range(N):
-            feats = contexts[i, :, :]  # [d_model, B]
-            mean = feats.mean(dim=1, keepdim=True)
-            centered = feats - mean
-            cov = (1.0 / (B - 1)) * torch.matmul(centered, centered.t())
-            decov_loss += 0.5 * (torch.norm(cov, p='fro') ** 2 - torch.norm(torch.diag(cov)) ** 2)
+        if B > 1:
+            for i in range(N):
+                feats = contexts[i, :, :]  # [d_model, B]
+                mean = feats.mean(dim=1, keepdim=True)
+                centered = feats - mean
+                cov = (1.0 / (B - 1)) * torch.matmul(centered, centered.t())
+                decov_loss = decov_loss + 0.5 * (
+                    torch.norm(cov, p='fro') ** 2 - torch.norm(torch.diag(cov)) ** 2
+                )
 
         return x, decov_loss
 
@@ -206,11 +286,34 @@ class ConCare(nn.Module):
     """
     Multi-channel GRU plus per-feature attention and feature pooling.
     """
-    def __init__(self, input_dim, hidden_dim, d_model, MHD_num_head, d_ff, output_dim, keep_prob, demographic_dim):
+    def __init__(
+        self,
+        input_dim,
+        hidden_dim,
+        d_model,
+        MHD_num_head,
+        d_ff,
+        output_dim,
+        keep_prob,
+        demographic_dim,
+        mask_dim: int = 0,
+        base_value_dim: int | None = None,
+        config_path: str | None = None,
+        enable_missing_aware: bool = False,
+    ):
         super().__init__()
 
-        # Hyperparameters
-        self.input_dim = input_dim
+        self.use_missing_aware = enable_missing_aware
+        self.total_input_dim = input_dim
+        if self.use_missing_aware:
+            self.mask_dim = mask_dim
+            self.value_dim = input_dim - mask_dim
+            if self.value_dim <= 0:
+                raise ValueError(f"input_dim ({input_dim}) must be larger than mask_dim ({mask_dim}).")
+        else:
+            self.mask_dim = 0
+            self.value_dim = input_dim
+
         self.hidden_dim = hidden_dim
         self.d_model = d_model
         self.MHD_num_head = MHD_num_head
@@ -218,15 +321,42 @@ class ConCare(nn.Module):
         self.output_dim = output_dim
         self.keep_prob = keep_prob
         self.demographic_dim = demographic_dim
+        self.base_value_dim = base_value_dim or self.value_dim
+
+        if self.use_missing_aware:
+            cfg_path = Path(config_path) if config_path is not None else _DEFAULT_CONFIG_PATH
+            channel_names, mapping = _load_value_channel_mapping(cfg_path)
+            fallback_channels = self.mask_dim if self.mask_dim > 0 else max(len(mapping), 1) or 1
+            if not mapping:
+                mapping = list(range(max(fallback_channels, 1)))
+            if len(mapping) != self.value_dim:
+                repeats = math.ceil(self.value_dim / len(mapping))
+                mapping = (mapping * repeats)[:self.value_dim]
+                warnings.warn(
+                    f"Channel mapping length mismatch (expected {self.value_dim}, loaded {len(mapping)}). "
+                    "Mapping has been truncated/repeated to align with value dimensions."
+                )
+            self.value_to_channel = mapping
+            self.channel_count = len(channel_names) if channel_names else max(fallback_channels, 1)
+        else:
+            self.value_to_channel = []
+            self.channel_count = 0
 
         # Per-feature GRUs
-        self.GRUs = nn.ModuleList([nn.GRU(1, self.hidden_dim, batch_first=True) for _ in range(self.input_dim)])
+        self.GRUs = nn.ModuleList([nn.GRU(1, self.hidden_dim, batch_first=True) for _ in range(self.value_dim)])
 
-        # Per-feature attention using authors' 'new' time-aware formulation
-        self.LastStepAttentions = nn.ModuleList([
-            SingleAttentionPerFeatureNew(self.hidden_dim, attention_hidden_dim=8)
-            for _ in range(self.input_dim)
-        ])
+        if self.use_missing_aware:
+            self.TemporalAttentions = nn.ModuleList([
+                MissingAwareTemporalAttention(self.hidden_dim, attention_hidden_dim=16)
+                for _ in range(self.value_dim)
+            ])
+            self.LastStepAttentions = None
+        else:
+            self.TemporalAttentions = None
+            self.LastStepAttentions = nn.ModuleList([
+                SingleAttentionPerFeatureNew(self.hidden_dim, attention_hidden_dim=8)
+                for _ in range(self.value_dim)
+            ])
 
         # Demographic projections
         self.demo_proj_main = nn.Linear(self.demographic_dim, self.hidden_dim)
@@ -242,7 +372,13 @@ class ConCare(nn.Module):
         self.PositionwiseFeedForward = PositionwiseFeedForward(self.d_model, self.d_ff, dropout=0.1)
 
         # Final attention pooling over features
-        self.FinalAttentionQKV = FinalAttentionQKV(self.hidden_dim, self.hidden_dim, attention_type='mul', dropout=1 - self.keep_prob)
+        self.FinalAttentionQKV = FinalAttentionQKV(
+            self.hidden_dim,
+            self.hidden_dim,
+            attention_type='mul',
+            dropout=1 - self.keep_prob,
+            use_mask_bias=self.use_missing_aware,
+        )
 
         # Output head
         self.output0 = nn.Linear(self.hidden_dim, self.hidden_dim)
@@ -255,39 +391,66 @@ class ConCare(nn.Module):
 
     def forward(self, x, demo_input):
         """
-        x: [B, T, F]
+        x: [B, T, F_total] where F_total=value_dim+mask_dim
         demo_input: [B, D]
         Returns: prediction [B, 1] and DeCov loss
         """
-        B, T, F = x.size()
+        B, T, F_total = x.size()
         device = x.device
-        assert F == self.input_dim, f"Expected {self.input_dim} features, got {F}"
+        if F_total != self.total_input_dim:
+            raise ValueError(f"Expected {self.total_input_dim} features, got {F_total}")
         assert self.d_model % self.MHD_num_head == 0
 
         # Demographics as an extra feature
         demo_main = self.tanh(self.demo_proj_main(demo_input)).unsqueeze(1)  # [B, 1, H]
 
-        # Per-feature GRU + attention
-        feats = []
-        for i in range(F):
-            xi = x[:, :, i].unsqueeze(-1)  # [B, T, 1]
-            h0 = torch.zeros(1, B, self.hidden_dim, device=device)
-            gru_out, _ = self.GRUs[i](xi, h0)            # [B, T, H]
-            vi, _ = self.LastStepAttentions[i](gru_out)  # [B, H]
-            feats.append(vi.unsqueeze(1))                # [B, 1, H]
+        value_feats = x[:, :, :self.value_dim]
+        mask_feats = x[:, :, self.value_dim:] if self.mask_dim > 0 else None
+        if mask_feats is not None and mask_feats.shape[-1] != self.mask_dim:
+            raise ValueError(f"Mask tensor width mismatch: expected {self.mask_dim}, got {mask_feats.shape[-1]}")
 
-        feats = torch.cat(feats, dim=1)                  # [B, F, H]
-        feats = torch.cat([feats, demo_main], dim=1)     # [B, F+1, H]
-        feats = self.dropout(feats)
+        h0 = torch.zeros(1, B, self.hidden_dim, device=device)
 
-        # Self-attention over features with DeCov
-        contexts, decov = self.SublayerConnection(feats, lambda z: self.MultiHeadedAttention(feats, feats, feats, None))
+        if self.use_missing_aware:
+            feats = []
+            feature_masks = []
+            ones_mask = torch.ones(B, T, device=device)
+            for i in range(self.value_dim):
+                xi = value_feats[:, :, i].unsqueeze(-1)  # [B, T, 1]
+                if mask_feats is None or self.mask_dim == 0:
+                    mi = ones_mask
+                else:
+                    ch_idx = self.value_to_channel[i]
+                    ch_idx = min(max(ch_idx, 0), self.mask_dim - 1)
+                    mi = mask_feats[:, :, ch_idx]
+                gru_out, _ = self.GRUs[i](xi, h0)
+                vi, _ = self.TemporalAttentions[i](gru_out, mi)
+                feats.append(vi.unsqueeze(1))
+                feature_masks.append(mi.mean(dim=1, keepdim=True))
 
-        # Feed-forward with the same SublayerConnection
-        contexts = self.SublayerConnection(contexts, lambda z: self.PositionwiseFeedForward(contexts))[0]
+            feats = torch.cat(feats, dim=1)
+            feature_masks = torch.cat(feature_masks, dim=1)
+            feats = torch.cat([feats, demo_main], dim=1)
+            demo_mask = torch.ones(B, 1, device=device)
+            feature_masks = torch.cat([feature_masks, demo_mask], dim=1)
+            feats = self.dropout(feats)
 
-        # Final attention pooling
-        pooled, _ = self.FinalAttentionQKV(contexts)
+            contexts, decov = self.SublayerConnection(feats, lambda z: self.MultiHeadedAttention(z, z, z, None))
+            contexts = self.SublayerConnection(contexts, lambda z: self.PositionwiseFeedForward(z))[0]
+            pooled, _ = self.FinalAttentionQKV(contexts, feature_masks)
+        else:
+            feats = []
+            for i in range(self.value_dim):
+                xi = value_feats[:, :, i].unsqueeze(-1)
+                gru_out, _ = self.GRUs[i](xi, h0)
+                vi, _ = self.LastStepAttentions[i](gru_out)
+                feats.append(vi.unsqueeze(1))
+            feats = torch.cat(feats, dim=1)
+            feats = torch.cat([feats, demo_main], dim=1)
+            feats = self.dropout(feats)
+            contexts, decov = self.SublayerConnection(feats, lambda z: self.MultiHeadedAttention(z, z, z, None))
+            contexts = self.SublayerConnection(contexts, lambda z: self.PositionwiseFeedForward(z))[0]
+            pooled, _ = self.FinalAttentionQKV(contexts)
 
         # Output
         out = self.output1(self.relu(self.output0(pooled)))
