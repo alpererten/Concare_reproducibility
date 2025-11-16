@@ -1,6 +1,7 @@
 # Ignore only large data folders inside mimic3-benchmarks
 mimic3-benchmarks/data_input/
 mimic3-benchmarks/data/root/
+Regenerated_Project_Code/data
 
 
 # Byte-compiled / optimized / DLL files
