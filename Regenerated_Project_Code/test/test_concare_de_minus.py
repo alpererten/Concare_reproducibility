@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from model_codes.ConCare_DE_minus import ConCareDEMinus
+from Regenerated_Project_Code.model_codes.ConCare_DE_minus import ConCareDEMinus
 
 
 class ConCareDEMinusForwardTest(unittest.TestCase):
