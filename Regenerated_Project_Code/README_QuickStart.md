@@ -179,7 +179,7 @@ python train.py \
   --epochs 100 --batch_size 256 \
   --model_variant concare_full \
   --missing_aware_extension \
-  --missing_aware_pretrain_epochs 40 \
+  --missing_aware_pretrain_epochs 10 \
   --missing_aware_freeze_epochs 5 \
   --missing_aware_mask_ratio_min 0.1 \
   --missing_aware_mask_ratio_max 0.4 \
