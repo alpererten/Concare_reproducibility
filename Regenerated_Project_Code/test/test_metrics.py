@@ -13,7 +13,7 @@ except Exception:  # pragma: no cover - defensive guard
 
 
 _ROOT = Path(__file__).resolve().parents[2]
-_AUTHORS_METRICS_PATH = _ROOT / "ConCare-master-authors-repo" / "utils" / "metrics.py"
+_AUTHORS_METRICS_PATH = _ROOT / "Regenerated_Project_Code" / "metrics_authors.py"
 _REGEN_METRICS_PATH = _ROOT / "Regenerated_Project_Code" / "metrics.py"
 
 
