@@ -370,15 +370,17 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
     model.train()
     total_loss = 0.0
     probs, labels = [], []
+    device_type = "cuda" if isinstance(device, str) and "cuda" in device else "cpu"
     for batch_idx, (X, D, y) in enumerate(loader):
         X, D, y = X.to(device, non_blocking=True), D.to(device, non_blocking=True), y.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
         if scaler:
-            with amp.autocast("cuda", dtype=torch.bfloat16):
+            with amp.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=(device_type == "cuda")):
                 logits, decov = model(X, D)
                 decov = _sanitize_decov(decov)
-                bce = criterion(logits, y)
-                loss = bce + lambda_decov * decov
+            with amp.autocast(device_type=device_type, enabled=False):
+                bce = criterion(logits.float(), y.float())
+            loss = bce + lambda_decov * decov
             if not torch.isfinite(loss):
                 for g in optimizer.param_groups:
                     g['lr'] = max(g['lr'] * 0.5, 1e-6)
