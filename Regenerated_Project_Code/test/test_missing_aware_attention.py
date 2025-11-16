@@ -87,6 +87,30 @@ class MissingAwareAttentionTests(unittest.TestCase):
             self.assertTrue(torch.isfinite(out).all())
             self.assertTrue(torch.isfinite(decov))
 
+            ctx, masks, _ = model(X, D, return_context=True)
+            self.assertEqual(ctx.shape[:2], (1, 3))  # 2 value dims + 1 demo
+            self.assertIsNotNone(masks)
+            self.assertEqual(masks.shape, (1, 3))
+
+    def test_return_context_without_missing_extension(self):
+        model = ConCare(
+            input_dim=2,
+            hidden_dim=4,
+            d_model=4,
+            MHD_num_head=2,
+            d_ff=8,
+            output_dim=1,
+            keep_prob=0.9,
+            demographic_dim=1,
+            mask_dim=0,
+            enable_missing_aware=False,
+        )
+        X = torch.randn(1, 3, 2)
+        D = torch.randn(1, 1)
+        ctx, masks, _ = model(X, D, return_context=True)
+        self.assertEqual(ctx.shape[:2], (1, 3))
+        self.assertIsNone(masks)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,51 @@
+=== ConCare Training Log Started (2025-11-16_01-30-40) ===
+epochs=100  batch_size=256  lr=0.001  weight_decay=0.0  lambda_decov=0.0001  effective_lambda=0.0001  amp=True  compile=False
+model_variant=concare_full (Full ConCare (multi-channel + DeCov))  uses_decov=True
+input_dim=76  timestep=0.8  append_masks=True
+
+missing_aware_extension=1  pretrain_epochs=50  mask_ratio=[0.2,0.5]  freeze_epochs=10
+
+New best model at epoch 1: val AUPRC=0.1675, AUROC=0.5618, loss=0.4552, thr=0.01, F1=0.2384, P=0.1353, R=1.0000
+[AUTHORS] acc=0.8647 auroc=0.5618 auprc=0.1666 minpse=0.1844 f1=0.0000
+New best model at epoch 10: val AUPRC=0.1685, AUROC=0.5646, loss=0.3963, thr=0.01, F1=0.2384, P=0.1353, R=1.0000
+[AUTHORS] acc=0.8647 auroc=0.5646 auprc=0.1675 minpse=0.1868 f1=0.0000
+New best model at epoch 11: val AUPRC=0.3988, AUROC=0.7971, loss=0.3775, thr=0.41, F1=0.4334, P=0.4267, R=0.4404
+[AUTHORS] acc=0.8662 auroc=0.7971 auprc=0.3966 minpse=0.4283 f1=0.4022
+New best model at epoch 12: val AUPRC=0.4714, AUROC=0.8076, loss=0.3219, thr=0.38, F1=0.4714, P=0.4615, R=0.4817
+[AUTHORS] acc=0.8749 auroc=0.8076 auprc=0.4706 minpse=0.4655 f1=0.4030
+New best model at epoch 13: val AUPRC=0.4904, AUROC=0.8274, loss=0.3200, thr=0.22, F1=0.4931, P=0.4578, R=0.5344
+[AUTHORS] acc=0.8805 auroc=0.8274 auprc=0.4895 minpse=0.4760 f1=0.4313
+New best model at epoch 14: val AUPRC=0.4981, AUROC=0.8383, loss=0.3079, thr=0.25, F1=0.5185, P=0.4600, R=0.5940
+[AUTHORS] acc=0.8737 auroc=0.8383 auprc=0.4974 minpse=0.4943 f1=0.4371
+New best model at epoch 15: val AUPRC=0.5083, AUROC=0.8418, loss=0.3367, thr=0.18, F1=0.5169, P=0.4367, R=0.6330
+[AUTHORS] acc=0.8734 auroc=0.8418 auprc=0.5075 minpse=0.5000 f1=0.4574
+New best model at epoch 17: val AUPRC=0.5172, AUROC=0.8352, loss=0.3359, thr=0.27, F1=0.5231, P=0.4826, R=0.5711
+[AUTHORS] acc=0.8759 auroc=0.8352 auprc=0.5163 minpse=0.5078 f1=0.4709
+New best model at epoch 21: val AUPRC=0.5186, AUROC=0.8370, loss=0.3228, thr=0.23, F1=0.5120, P=0.4277, R=0.6376
+[AUTHORS] acc=0.8746 auroc=0.8370 auprc=0.5178 minpse=0.5092 f1=0.4847
+[EARLY STOP] Triggered at epoch 31 (best_epoch=21, best_val_auprc=0.5186)
+
+=== Final Test Results ===
+best_epoch=21  best_val_auprc=0.5186
+
+-- threshold-free --
+   auprc: 0.4784
+   auroc: 0.8442
+    loss: 0.2876
+
+-- authors-style @best_val_thr --
+acc=0.8418  f1=0.4754  auroc=0.8442  auprc=0.4784  minpse=0.4971  thr_used=0.23
+
+=== AUTHORS-STYLE TEST METRICS ===
+acc=0.885043
+auroc=0.844170
+auprc=0.477382
+minpse=0.459893
+f1_score=0.444776
+prec0=0.923469
+prec1=0.503378
+rec0=0.948637
+rec1=0.398396
+
+-- fixed @thr=0.66 --
+acc=0.8986  f1=0.4015  auroc=0.8442  auprc=0.4784  minpse=0.5368

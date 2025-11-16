@@ -7,6 +7,7 @@ import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 import argparse
+import copy
 import importlib
 import glob
 import json
@@ -118,6 +119,142 @@ def _infer_mask_dim(input_dim: int, append_masks: bool):
     return mask_dim, value_dim
 
 
+def _clone_ema_model(model: torch.nn.Module):
+    ema = copy.deepcopy(model)
+    for param in ema.parameters():
+        param.requires_grad_(False)
+    return ema
+
+
+@torch.no_grad()
+def _update_ema_model(ema_model: torch.nn.Module, model: torch.nn.Module, decay: float):
+    for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+        ema_param.data.mul_(decay).add_(param.data, alpha=1.0 - decay)
+
+
+def _freeze_concare_encoder(model: torch.nn.Module, freeze: bool):
+    """
+    Freeze all parameters except the final prediction head.
+    """
+    if not hasattr(model, "output0"):
+        return
+    for name, param in model.named_parameters():
+        if name.startswith("output0") or name.startswith("output1"):
+            param.requires_grad_(True)
+        else:
+            param.requires_grad_(not freeze)
+
+
+def _mask_random_observations(
+    X: torch.Tensor,
+    value_dim: int,
+    mask_dim: int,
+    min_ratio: float,
+    max_ratio: float,
+    value_to_channel: List[int],
+):
+    """
+    Randomly remove observed measurements with probability sampled
+    from [min_ratio, max_ratio]. Returns augmented tensor and
+    per-feature removal weights.
+    """
+    if mask_dim <= 0:
+        raise ValueError("Missing-aware pretraining requires append_masks=True to supply observation masks.")
+    augmented = X.clone()
+    values = augmented[:, :, :value_dim]
+    masks = augmented[:, :, value_dim:]
+    observed = masks > 0.5
+    ratio = torch.empty(X.size(0), 1, 1, device=X.device).uniform_(min_ratio, max_ratio)
+    removed = observed & (torch.rand_like(masks) < ratio)
+    idx = torch.tensor(value_to_channel, device=X.device, dtype=torch.long)
+    removal_values = torch.index_select(removed, dim=2, index=idx)
+    values = values.masked_fill(removal_values, 0.0)
+    augmented[:, :, :value_dim] = values
+    new_mask = masks * (~removed)
+    augmented[:, :, value_dim:] = new_mask.float()
+    removal_weights = removal_values.float().mean(dim=1)  # [B, value_dim]
+    return augmented, removal_weights
+
+
+def _latent_reconstruction_loss(student_ctx, teacher_ctx, removal_weights):
+    """
+    Compute normalized L1 loss where removal_weights selects features that were masked.
+    """
+    if removal_weights is None:
+        return None
+    demo_pad = torch.zeros(removal_weights.size(0), 1, device=removal_weights.device)
+    weights = torch.cat([removal_weights, demo_pad], dim=1).unsqueeze(-1)  # [B, value_dim+1, 1]
+    total_weight = weights.sum()
+    if total_weight.item() <= 1e-6:
+        return None
+    diff = torch.abs(student_ctx.float() - teacher_ctx.detach().float())
+    loss = (diff * weights).sum() / (total_weight * diff.size(-1) + 1e-6)
+    return loss
+
+
+def _run_missing_aware_pretraining(model, train_loader, args):
+    if args.missing_aware_pretrain_epochs <= 0:
+        return
+    if not hasattr(model, "mask_dim") or model.mask_dim <= 0:
+        raise ValueError("Missing-aware pretraining requires append_masks=True so that observation masks exist.")
+
+    print(f"\n[SMART] Starting latent reconstruction pre-training for {args.missing_aware_pretrain_epochs} epochs")
+    ema_model = _clone_ema_model(model).to(args.device)
+    ema_model.eval()
+    pretrain_lr = args.missing_aware_pretrain_lr or args.lr
+    optimizer = torch.optim.Adam(model.parameters(), lr=pretrain_lr, weight_decay=args.weight_decay)
+    scaler = amp.GradScaler("cuda") if args.amp and "cuda" in args.device else None
+    device_type = "cuda" if isinstance(args.device, str) and "cuda" in args.device else "cpu"
+
+    for epoch in range(1, args.missing_aware_pretrain_epochs + 1):
+        model.train()
+        running_loss = 0.0
+        steps = 0
+        for X, D, _ in train_loader:
+            X = X.to(args.device, non_blocking=True)
+            D = D.to(args.device, non_blocking=True)
+            augmented, removal_weights = _mask_random_observations(
+                X,
+                model.value_dim,
+                model.mask_dim,
+                args.missing_aware_mask_ratio_min,
+                args.missing_aware_mask_ratio_max,
+                model.value_to_channel,
+            )
+            optimizer.zero_grad(set_to_none=True)
+            if scaler:
+                with amp.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=(device_type == "cuda")):
+                    student_ctx, _, _ = model(augmented, D, return_context=True)
+                with torch.no_grad():
+                    ema_model.eval()
+                    teacher_ctx, _, _ = ema_model(X, D, return_context=True)
+                loss = _latent_reconstruction_loss(student_ctx, teacher_ctx, removal_weights)
+                if loss is None:
+                    continue
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                student_ctx, _, _ = model(augmented, D, return_context=True)
+                with torch.no_grad():
+                    ema_model.eval()
+                    teacher_ctx, _, _ = ema_model(X, D, return_context=True)
+                loss = _latent_reconstruction_loss(student_ctx, teacher_ctx, removal_weights)
+                if loss is None:
+                    continue
+                loss.backward()
+                optimizer.step()
+
+            _update_ema_model(ema_model, model, args.missing_aware_ema_decay)
+            running_loss += loss.item()
+            steps += 1
+        avg_loss = running_loss / max(steps, 1)
+        print(f"[SMART] Pre-train epoch {epoch}/{args.missing_aware_pretrain_epochs}  loss={avg_loss:.6f}")
+
+    ema_model.cpu()
+    del ema_model
+
+
 def _load_model_class(variant_key: str):
     meta = _MODEL_VARIANTS.get(variant_key)
     if meta is None:
@@ -140,6 +277,8 @@ def build_argparser():
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--lr_scheduler", choices=["none", "cosine"], default="none",
+                   help="Optional LR scheduler for fine-tuning stage")
     p.add_argument("--weight_decay", type=float, default=0.0)
     p.add_argument("--lambda_decov", type=float, default=1e-4)
     p.add_argument("--amp", action="store_true")
@@ -161,6 +300,26 @@ def build_argparser():
                    help="Choose which ConCare variant to train (full model vs. ConCareMC- ablation)")
     p.add_argument("--missing_aware_extension", action="store_true",
                    help="Enable SMART-style missing-aware attention extension for ConCare")
+    p.add_argument("--missing_aware_pretrain_epochs", type=int, default=0,
+                   help="Number of latent reconstruction epochs before fine-tuning (SMART pre-training)")
+    p.add_argument("--missing_aware_pretrain_lr", type=float, default=None,
+                   help="Learning rate for the missing-aware pre-training stage (defaults to --lr)")
+    p.add_argument("--missing_aware_mask_ratio_min", type=float, default=0.2,
+                   help="Lower bound for random removal probability during pre-training")
+    p.add_argument("--missing_aware_mask_ratio_max", type=float, default=0.8,
+                   help="Upper bound for random removal probability during pre-training")
+    p.add_argument("--missing_aware_ema_decay", type=float, default=0.99,
+                   help="EMA decay used to update the teacher encoder during pre-training")
+    p.add_argument("--missing_aware_freeze_epochs", type=int, default=0,
+                   help="Freeze encoder parameters for this many fine-tuning epochs (decoder only learns)")
+    p.add_argument("--missing_aware_aux_weight", type=float, default=0.0,
+                   help="Weight of latent reconstruction auxiliary loss during fine-tuning (0 disables)")
+    p.add_argument("--keep_prob", type=float, default=0.5,
+                   help="Dropout keep probability for ConCare encoders/heads (default 0.5)")
+    p.add_argument("--missing_aware_disable_mask_bias", action="store_true",
+                   help="Disable mask-biased feature attention when SMART extension is on")
+    p.add_argument("--missing_aware_disable_temporal_attention", action="store_true",
+                   help="Use ConCare's original per-feature attention even when SMART extension is enabled")
     p.add_argument("--cv_folds", type=int, default=0,
                    help="Number of folds for repeated cross-validation (0 disables CV mode)")
     p.add_argument("--cv_repeats", type=int, default=1,
@@ -384,6 +543,8 @@ def make_model(input_dim, device, args, use_compile=False):
         extra_kwargs["mask_dim"] = mask_dim
         extra_kwargs["base_value_dim"] = base_value_dim
         extra_kwargs["enable_missing_aware"] = True
+        extra_kwargs["enable_mask_bias"] = not args.missing_aware_disable_mask_bias
+        extra_kwargs["use_missing_temporal_attention"] = not args.missing_aware_disable_temporal_attention
     elif meta["class_name"] == "ConCare":
         extra_kwargs["enable_missing_aware"] = False
     print(f"[INFO] Creating model variant='{args.model_variant}' ({meta['description']}) "
@@ -396,7 +557,7 @@ def make_model(input_dim, device, args, use_compile=False):
         MHD_num_head=4,
         d_ff=256,
         output_dim=1,
-        keep_prob=0.5,
+        keep_prob=args.keep_prob,
         demographic_dim=12,
         **extra_kwargs,
     ).to(device)
@@ -474,6 +635,23 @@ def minpse_from_pr(precision: float, recall: float) -> float:
     return 1.0 - 0.5 * (precision + recall)
 
 
+def _sample_auxiliary_mask(X, value_dim, mask_dim, ratio, value_to_channel):
+    if mask_dim <= 0 or ratio <= 0:
+        return X, None
+    idx = torch.tensor(value_to_channel, device=X.device, dtype=torch.long)
+    augmented = X.clone()
+    values = augmented[:, :, :value_dim]
+    masks = augmented[:, :, value_dim:]
+    observed = masks > 0.5
+    removal = observed & (torch.rand_like(masks) < ratio)
+    removal_values = torch.index_select(removal, dim=2, index=idx)
+    values = values.masked_fill(removal_values, 0.0)
+    augmented[:, :, :value_dim] = values
+    augmented[:, :, value_dim:] = masks * (~removal)
+    removal_weights = removal_values.float().mean(dim=1)
+    return augmented, removal_weights
+
+
 # Choose which metric function to use (threshold-free set)
 def select_metric_fn(papers_mode: bool):
     # Always use local threshold-free metrics for training curves
@@ -485,11 +663,13 @@ def select_metric_fn(papers_mode: bool):
     return ours_binary_metrics, "local"
 
 
-def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoch, criterion, metric_fn):
+def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoch, criterion, metric_fn, aux_cfg=None):
     model.train()
     total_loss = 0.0
     probs, labels = [], []
     device_type = "cuda" if isinstance(device, str) and "cuda" in device else "cpu"
+    aux_weight = aux_cfg["weight"] if aux_cfg else 0.0
+    aux_ratio = aux_cfg["ratio"] if aux_cfg else 0.0
     for batch_idx, (X, D, y) in enumerate(loader):
         X, D, y = X.to(device, non_blocking=True), D.to(device, non_blocking=True), y.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
@@ -497,9 +677,19 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
             with amp.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=True):
                 logits, decov = model(X, D)
                 decov = _sanitize_decov(decov)
+                aux_loss = None
+                if aux_weight > 0.0 and hasattr(model, "value_dim") and model.mask_dim > 0:
+                    aug_X, removal_weights = _sample_auxiliary_mask(X, model.value_dim, model.mask_dim, aux_ratio, model.value_to_channel)
+                    if removal_weights is not None:
+                        student_ctx, _, _ = model(aug_X, D, return_context=True)
+                        with torch.no_grad():
+                            teacher_ctx, _, _ = model(X, D, return_context=True)
+                        aux_loss = _latent_reconstruction_loss(student_ctx, teacher_ctx, removal_weights)
             with amp.autocast(device_type=device_type, enabled=False):
                 bce = criterion(logits.float(), y.float())
             loss = bce + lambda_decov * decov.float()
+            if aux_loss is not None:
+                loss = loss + aux_weight * aux_loss
             if not torch.isfinite(loss):
                 for g in optimizer.param_groups:
                     g['lr'] = max(g['lr'] * 0.5, 1e-6)
@@ -517,7 +707,17 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
             logits, decov = model(X, D)
             decov = _sanitize_decov(decov)
             bce = criterion(logits, y)
+            aux_loss = None
+            if aux_weight > 0.0 and hasattr(model, "value_dim") and model.mask_dim > 0:
+                aug_X, removal_weights = _sample_auxiliary_mask(X, model.value_dim, model.mask_dim, aux_ratio, model.value_to_channel)
+                if removal_weights is not None:
+                    student_ctx, _, _ = model(aug_X, D, return_context=True)
+                    with torch.no_grad():
+                        teacher_ctx, _, _ = model(X, D, return_context=True)
+                    aux_loss = _latent_reconstruction_loss(student_ctx, teacher_ctx, removal_weights)
             loss = bce + lambda_decov * decov
+            if aux_loss is not None:
+                loss = loss + aux_weight * aux_loss
             if not torch.isfinite(loss):
                 for g in optimizer.param_groups:
                     g['lr'] = max(g['lr'] * 0.5, 1e-6)
@@ -638,6 +838,10 @@ def run_training_cycle(args, variant_meta, metric_fn, metric_source,
 
     model = make_model(input_dim, args.device, args, use_compile=args.compile)
 
+    if args.missing_aware_extension and args.missing_aware_pretrain_epochs > 0:
+        _run_missing_aware_pretraining(model, train_loader, args)
+        model.train()
+
     if not variant_meta["uses_decov"] and args.lambda_decov != 0.0:
         print(f"[WARN] Model variant '{args.model_variant}' disables DeCov. "
               f"Overriding lambda_decov={args.lambda_decov} → 0.0")
@@ -647,7 +851,17 @@ def run_training_cycle(args, variant_meta, metric_fn, metric_source,
     # ---- Unweighted BCE on probabilities ----
     criterion = torch.nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    if args.lr_scheduler == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.1)
+    else:
+        scheduler = None
     scaler = amp.GradScaler("cuda") if args.amp and "cuda" in args.device else None
+    freeze_epochs = args.missing_aware_freeze_epochs if args.missing_aware_extension else 0
+    if freeze_epochs > 0:
+        print(f"[SMART] Freezing encoder for first {freeze_epochs} fine-tuning epochs")
+        _freeze_concare_encoder(model, True)
+    else:
+        _freeze_concare_encoder(model, False)
 
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.results_dir, exist_ok=True)
@@ -666,7 +880,15 @@ def run_training_cycle(args, variant_meta, metric_fn, metric_source,
         f.write(f"epochs={args.epochs}  batch_size={args.batch_size}  lr={args.lr}  weight_decay={args.weight_decay}  "
                 f"lambda_decov={args.lambda_decov}  effective_lambda={target_lambda}  amp={args.amp}  compile={args.compile}\n")
         f.write(f"model_variant={args.model_variant} ({variant_meta['description']})  uses_decov={variant_meta['uses_decov']}\n")
-        f.write(f"input_dim={input_dim}  timestep={args.timestep}  append_masks={args.append_masks}\n\n")
+        f.write(f"input_dim={input_dim}  timestep={args.timestep}  append_masks={args.append_masks}  keep_prob={args.keep_prob}\n")
+        f.write(f"lr_scheduler={args.lr_scheduler}\n\n")
+        if args.missing_aware_extension:
+            f.write(f"missing_aware_extension=1  pretrain_epochs={args.missing_aware_pretrain_epochs}  "
+                    f"mask_ratio=[{args.missing_aware_mask_ratio_min},{args.missing_aware_mask_ratio_max}]  "
+                    f"freeze_epochs={args.missing_aware_freeze_epochs}  "
+                    f"aux_weight={args.missing_aware_aux_weight}  "
+                    f"mask_bias={'on' if not args.missing_aware_disable_mask_bias else 'off'}  "
+                    f"temporal_attn={'mask' if not args.missing_aware_disable_temporal_attention else 'original'}\n\n")
 
     print(f"\n🚀 Starting training at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     if fold_tag:
@@ -680,9 +902,16 @@ def run_training_cycle(args, variant_meta, metric_fn, metric_source,
     print(f"   Metrics source: {metric_source}{' (papers_metrics_mode ON)' if args.papers_metrics_mode else ''}\n")
 
     for epoch in range(1, args.epochs + 1):
+        if freeze_epochs > 0 and epoch == freeze_epochs + 1:
+            _freeze_concare_encoder(model, False)
+            print("[SMART] Encoder unfrozen; joint fine-tuning begins.")
         lambda_decov = target_lambda * (epoch / warmup_epochs) if epoch <= warmup_epochs else target_lambda
 
-        tr = train_one_epoch(model, train_loader, optimizer, scaler, args.device, lambda_decov, epoch, criterion, metric_fn)
+        aux_cfg = None
+        if args.missing_aware_extension and args.missing_aware_aux_weight > 0.0:
+            aux_cfg = {"weight": args.missing_aware_aux_weight, "ratio": args.missing_aware_mask_ratio_min}
+
+        tr = train_one_epoch(model, train_loader, optimizer, scaler, args.device, lambda_decov, epoch, criterion, metric_fn, aux_cfg=aux_cfg)
         va, yv_true, yv_prob = evaluate(model, val_loader, args.device, criterion, metric_fn)
 
         print(f"Epoch {epoch:03d} | Train loss {tr['loss']:.4f} AUPRC {tr['auprc']:.4f} AUROC {tr['auroc']:.4f} | "
@@ -714,6 +943,9 @@ def run_training_cycle(args, variant_meta, metric_fn, metric_source,
                             f"f1={authors_val['f1_score']:.4f}\n")
         else:
             epochs_no_improve += 1
+
+        if scheduler is not None:
+            scheduler.step()
 
         if args.early_stop_patience > 0 and epochs_no_improve >= args.early_stop_patience:
             print(f"[EARLY STOP] No val AUPRC improvement for {args.early_stop_patience} epochs. Stopping at epoch {epoch}.")

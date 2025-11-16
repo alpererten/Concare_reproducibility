@@ -142,23 +142,57 @@ Each file includes:
 | `--diag` | Runs dataset and model diagnostics |
 | `--papers_metrics_mode` | Enables authors’ metrics printing |
 | `--missing_aware_extension` | Turns on the SMART-style missing-aware attention path (see below) |
+| `--lr_scheduler` | Optional LR decay during fine-tuning (`none`, `cosine`) |
+| `--keep_prob` | Dropout keep probability (default 0.5; lower value = more dropout) |
+| `--missing_aware_disable_mask_bias` | In SMART mode, skip mask-biased feature pooling (acts like vanilla ConCare) |
+| `--missing_aware_disable_temporal_attention` | In SMART mode, reuse ConCare’s original per-feature attention |
 
 ### 🧠 SMART-style Missing-Aware Extension (Optional)
 
-To experiment with SMART-inspired missing-aware attention, pass `--missing_aware_extension` while training the full ConCare variant.  
-This keeps the baseline path untouched unless explicitly requested and reuses the cached `--append_masks` tensors to bias temporal/feature attention weights.
+Enable ConCare’s SMART-inspired path (mask-aware temporal attention + latent reconstruction) with `--missing_aware_extension`.  
+Two-stage training mirrors the paper:
 
-Example:
+1. **Latent pre-training** (mask/reconstruct health contexts with EMA teacher)
+2. **Fine-tuning** (freeze encoder for a few epochs, then unfreeze)
+
+During pre-training we randomly remove observed measurements (probability sampled from the provided min/max range), feed the masked tensor through the student encoder, and minimize an L1 reconstruction loss against an EMA “teacher” encoder that sees the pristine sequence. No labels are used in this phase. Fine-tuning swaps in the standard BCE head; optionally keep the encoder frozen for a few epochs so only the classifier learns before unlocking the full network.
+
+This mirrors the masked-token idea from language models: the ConCare encoder (multi-channel GRUs + cross-feature attention) is treated as the “language encoder,” and latent pre-training teaches it how to infer missing clinical tokens before we ever see labels. Once fine-tuned, the decoder maps those richer contexts to mortality risk, which is why it get more confident predictions even when vitals are sparse.
+
+Key flags:
+
+| Flag | Meaning |
+|------|---------|
+| `--missing_aware_pretrain_epochs` | Number of reconstruction epochs before classification (default 0 = skip) |
+| `--missing_aware_mask_ratio_min/max` | Range for random removal probability during pre-training |
+| `--missing_aware_pretrain_lr` | Optional LR just for the pre-training stage (falls back to `--lr`) |
+| `--missing_aware_ema_decay` | EMA decay for the teacher encoder |
+| `--missing_aware_freeze_epochs` | How long to freeze the encoder when fine-tuning (decoder-only training) |
+| `--missing_aware_aux_weight` | Weight of latent reconstruction auxiliary loss during fine-tuning (0 to disable) |
+| `--missing_aware_disable_mask_bias` | Disable mask-biased feature attention if you want a pure ConCare ablation |
+| `--missing_aware_disable_temporal_attention` | Disable the mask-aware per-feature temporal attention (fallback to original ConCare attention) |
+
+Example command (25 pre-train epochs, freeze encoder for first 5 fine-tune epochs):
 
 ```bash
 python train.py \
+  --epochs 100 --batch_size 256 \
   --model_variant concare_full \
   --missing_aware_extension \
-  --epochs 100 --batch_size 256 --lr 1e-3 \
-  --append_masks --amp
+  --missing_aware_pretrain_epochs 40 \
+  --missing_aware_freeze_epochs 5 \
+  --missing_aware_mask_ratio_min 0.1 \
+  --missing_aware_mask_ratio_max 0.4 \
+  --missing_aware_unfreeze_lr 2e-4 \
+  --lr 5e-4 \
+  --append_masks --amp  --missing_aware_pretrain_lr 2e-4 \
+  --early_stop_patience 10 --early_stop_min_delta 0.001 --lr_scheduler cosine \
+  --missing_aware_aux_weight 0.05  --weight_decay 1e-4
 ```
 
-We recommend running the baseline first, then enabling the extension so deltas are easier to attribute.
+Baseline ConCare runs are unaffected unless `--missing_aware_extension` is explicitly supplied.
+
+Reference: Zhihao Yu et al., “SMART: Towards Pre-trained Missing-Aware Model for Patient Health Status Prediction” (NeurIPS 2024).
 
 ---
 

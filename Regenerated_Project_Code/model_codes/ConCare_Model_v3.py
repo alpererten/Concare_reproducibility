@@ -300,10 +300,13 @@ class ConCare(nn.Module):
         base_value_dim: int | None = None,
         config_path: str | None = None,
         enable_missing_aware: bool = False,
+        enable_mask_bias: bool = True,
+        use_missing_temporal_attention: bool = True,
     ):
         super().__init__()
 
         self.use_missing_aware = enable_missing_aware
+        self.use_missing_temporal_attention = use_missing_temporal_attention
         self.total_input_dim = input_dim
         if self.use_missing_aware:
             self.mask_dim = mask_dim
@@ -345,18 +348,17 @@ class ConCare(nn.Module):
         # Per-feature GRUs
         self.GRUs = nn.ModuleList([nn.GRU(1, self.hidden_dim, batch_first=True) for _ in range(self.value_dim)])
 
-        if self.use_missing_aware:
+        self.LastStepAttentions = nn.ModuleList([
+            SingleAttentionPerFeatureNew(self.hidden_dim, attention_hidden_dim=8)
+            for _ in range(self.value_dim)
+        ])
+        if self.use_missing_aware and self.use_missing_temporal_attention:
             self.TemporalAttentions = nn.ModuleList([
                 MissingAwareTemporalAttention(self.hidden_dim, attention_hidden_dim=16)
                 for _ in range(self.value_dim)
             ])
-            self.LastStepAttentions = None
         else:
             self.TemporalAttentions = None
-            self.LastStepAttentions = nn.ModuleList([
-                SingleAttentionPerFeatureNew(self.hidden_dim, attention_hidden_dim=8)
-                for _ in range(self.value_dim)
-            ])
 
         # Demographic projections
         self.demo_proj_main = nn.Linear(self.demographic_dim, self.hidden_dim)
@@ -377,7 +379,7 @@ class ConCare(nn.Module):
             self.hidden_dim,
             attention_type='mul',
             dropout=1 - self.keep_prob,
-            use_mask_bias=self.use_missing_aware,
+            use_mask_bias=self.use_missing_aware and enable_mask_bias,
         )
 
         # Output head
@@ -389,11 +391,11 @@ class ConCare(nn.Module):
         self.sigmoid = nn.Sigmoid()
         self.relu = nn.ReLU()
 
-    def forward(self, x, demo_input):
+    def forward(self, x, demo_input, return_context=False, context_only=False):
         """
         x: [B, T, F_total] where F_total=value_dim+mask_dim
         demo_input: [B, D]
-        Returns: prediction [B, 1] and DeCov loss
+        Returns: prediction [B, 1] and DeCov loss (or latent contexts if return_context=True)
         """
         B, T, F_total = x.size()
         device = x.device
@@ -424,7 +426,10 @@ class ConCare(nn.Module):
                     ch_idx = min(max(ch_idx, 0), self.mask_dim - 1)
                     mi = mask_feats[:, :, ch_idx]
                 gru_out, _ = self.GRUs[i](xi, h0)
-                vi, _ = self.TemporalAttentions[i](gru_out, mi)
+                if self.TemporalAttentions is not None:
+                    vi, _ = self.TemporalAttentions[i](gru_out, mi)
+                else:
+                    vi, _ = self.LastStepAttentions[i](gru_out)
                 feats.append(vi.unsqueeze(1))
                 feature_masks.append(mi.mean(dim=1, keepdim=True))
 
@@ -437,6 +442,8 @@ class ConCare(nn.Module):
 
             contexts, decov = self.SublayerConnection(feats, lambda z: self.MultiHeadedAttention(z, z, z, None))
             contexts = self.SublayerConnection(contexts, lambda z: self.PositionwiseFeedForward(z))[0]
+            if return_context:
+                return contexts, feature_masks, decov
             pooled, _ = self.FinalAttentionQKV(contexts, feature_masks)
         else:
             feats = []
@@ -450,7 +457,16 @@ class ConCare(nn.Module):
             feats = self.dropout(feats)
             contexts, decov = self.SublayerConnection(feats, lambda z: self.MultiHeadedAttention(z, z, z, None))
             contexts = self.SublayerConnection(contexts, lambda z: self.PositionwiseFeedForward(z))[0]
+            if return_context:
+                feature_masks = None
+                return contexts, feature_masks, decov
             pooled, _ = self.FinalAttentionQKV(contexts)
+
+        if context_only:
+            return pooled, decov
+
+        if context_only:
+            return pooled, decov
 
         # Output
         out = self.output1(self.relu(self.output0(pooled)))
