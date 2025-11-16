@@ -1,0 +1,22 @@
+experiment_id: "2025-11-15_missing_aware_extension_v1"
+parent_id: "exp_2019_aaai_baseline_concare.yaml"
+date: "2025-11-15"
+owner: "codex_agent"
+dataset: "MIMIC-III in-hospital mortality"
+change: "add optional SMART-inspired missing-aware attention (--missing_aware_extension)"
+belief:
+  expected_final_gain: "small_positive"
+  expected_stability_gain: "moderate"
+  expected_convergence_speed_gain: "neutral"
+metrics:
+  mimic_iii:
+    status: "pending_run"
+    source: null
+effect_size:
+  mimic_iii:
+    auprc_delta_vs_parent: null
+decision: "needs_followup"
+notes: >
+  Implemented the SMART-style attention path (temporal mask biasing + mask-aware feature pooling)
+  and gated it behind --missing_aware_extension so baseline ConCare remains unchanged. Awaiting
+  GPU time to pretrain/fine-tune with the new path; metrics will be populated after the first run.

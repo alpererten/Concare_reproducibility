@@ -141,6 +141,24 @@ Each file includes:
 | `--compile` | Enables `torch.compile` (PyTorch 2.0+) |
 | `--diag` | Runs dataset and model diagnostics |
 | `--papers_metrics_mode` | Enables authors’ metrics printing |
+| `--missing_aware_extension` | Turns on the SMART-style missing-aware attention path (see below) |
+
+### 🧠 SMART-style Missing-Aware Extension (Optional)
+
+To experiment with SMART-inspired missing-aware attention, pass `--missing_aware_extension` while training the full ConCare variant.  
+This keeps the baseline path untouched unless explicitly requested and reuses the cached `--append_masks` tensors to bias temporal/feature attention weights.
+
+Example:
+
+```bash
+python train.py \
+  --model_variant concare_full \
+  --missing_aware_extension \
+  --epochs 100 --batch_size 256 --lr 1e-3 \
+  --append_masks --amp
+```
+
+We recommend running the baseline first, then enabling the extension so deltas are easier to attribute.
 
 ---
 
