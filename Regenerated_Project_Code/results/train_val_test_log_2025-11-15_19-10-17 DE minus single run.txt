@@ -1,0 +1,76 @@
+=== ConCare Training Log Started (2025-11-15_19-10-17) ===
+epochs=100  batch_size=256  lr=0.001  weight_decay=0.0  lambda_decov=0.001  effective_lambda=0.001  amp=True  compile=False
+model_variant=concare_de_minus (ConCareDE- ablation (removes demographic channel))  uses_decov=True
+input_dim=76  timestep=0.8  append_masks=True
+
+New best model at epoch 1: val AUPRC=0.3570, AUROC=0.7461, loss=0.3919, thr=0.14, F1=0.3553, P=0.4167, R=0.3096
+[AUTHORS] acc=0.8647 auroc=0.7461 auprc=0.3560 minpse=0.3727 f1=0.0000
+New best model at epoch 3: val AUPRC=0.4099, AUROC=0.7971, loss=0.3283, thr=0.25, F1=0.4433, P=0.4122, R=0.4794
+[AUTHORS] acc=0.8681 auroc=0.7971 auprc=0.4078 minpse=0.4335 f1=0.1164
+New best model at epoch 4: val AUPRC=0.4509, AUROC=0.8180, loss=0.3144, thr=0.25, F1=0.4741, P=0.4472, R=0.5046
+[AUTHORS] acc=0.8759 auroc=0.8180 auprc=0.4496 minpse=0.4633 f1=0.2754
+New best model at epoch 5: val AUPRC=0.4762, AUROC=0.8241, loss=0.3076, thr=0.20, F1=0.4862, P=0.4052, R=0.6078
+[AUTHORS] acc=0.8777 auroc=0.8241 auprc=0.4754 minpse=0.4787 f1=0.3411
+New best model at epoch 6: val AUPRC=0.4817, AUROC=0.8316, loss=0.3048, thr=0.27, F1=0.4941, P=0.4612, R=0.5321
+[AUTHORS] acc=0.8786 auroc=0.8316 auprc=0.4809 minpse=0.4817 f1=0.3362
+New best model at epoch 7: val AUPRC=0.5032, AUROC=0.8361, loss=0.3196, thr=0.37, F1=0.5122, P=0.4463, R=0.6009
+[AUTHORS] acc=0.8696 auroc=0.8361 auprc=0.5025 minpse=0.5092 f1=0.4750
+New best model at epoch 9: val AUPRC=0.5069, AUROC=0.8362, loss=0.2994, thr=0.27, F1=0.5165, P=0.4812, R=0.5573
+[AUTHORS] acc=0.8783 auroc=0.8362 auprc=0.5062 minpse=0.5092 f1=0.3574
+New best model at epoch 10: val AUPRC=0.5096, AUROC=0.8443, loss=0.2979, thr=0.28, F1=0.5143, P=0.4397, R=0.6193
+[AUTHORS] acc=0.8759 auroc=0.8443 auprc=0.5089 minpse=0.5023 f1=0.4135
+New best model at epoch 11: val AUPRC=0.5193, AUROC=0.8421, loss=0.2961, thr=0.22, F1=0.5212, P=0.4500, R=0.6193
+[AUTHORS] acc=0.8799 auroc=0.8421 auprc=0.5186 minpse=0.5000 f1=0.3452
+New best model at epoch 13: val AUPRC=0.5223, AUROC=0.8439, loss=0.2963, thr=0.29, F1=0.5167, P=0.4519, R=0.6032
+[AUTHORS] acc=0.8799 auroc=0.8439 auprc=0.5216 minpse=0.5114 f1=0.3925
+New best model at epoch 16: val AUPRC=0.5235, AUROC=0.8474, loss=0.2965, thr=0.30, F1=0.5272, P=0.4517, R=0.6330
+[AUTHORS] acc=0.8790 auroc=0.8474 auprc=0.5228 minpse=0.5138 f1=0.4265
+New best model at epoch 20: val AUPRC=0.5256, AUROC=0.8471, loss=0.2946, thr=0.27, F1=0.5221, P=0.4367, R=0.6491
+[AUTHORS] acc=0.8796 auroc=0.8471 auprc=0.5249 minpse=0.5069 f1=0.4294
+New best model at epoch 23: val AUPRC=0.5277, AUROC=0.8538, loss=0.2892, thr=0.22, F1=0.5279, P=0.4256, R=0.6950
+[AUTHORS] acc=0.8796 auroc=0.8538 auprc=0.5270 minpse=0.5046 f1=0.4121
+New best model at epoch 39: val AUPRC=0.5287, AUROC=0.8575, loss=0.2886, thr=0.32, F1=0.5262, P=0.4846, R=0.5757
+[AUTHORS] acc=0.8805 auroc=0.8575 auprc=0.5279 minpse=0.5069 f1=0.4412
+New best model at epoch 40: val AUPRC=0.5325, AUROC=0.8563, loss=0.3022, thr=0.40, F1=0.5234, P=0.4782, R=0.5780
+[AUTHORS] acc=0.8737 auroc=0.8563 auprc=0.5318 minpse=0.5115 f1=0.4932
+New best model at epoch 41: val AUPRC=0.5376, AUROC=0.8541, loss=0.2874, thr=0.27, F1=0.5196, P=0.4538, R=0.6078
+[AUTHORS] acc=0.8827 auroc=0.8541 auprc=0.5368 minpse=0.5069 f1=0.3679
+New best model at epoch 45: val AUPRC=0.5376, AUROC=0.8568, loss=0.2855, thr=0.29, F1=0.5270, P=0.4980, R=0.5596
+[AUTHORS] acc=0.8839 auroc=0.8568 auprc=0.5369 minpse=0.5148 f1=0.4119
+New best model at epoch 46: val AUPRC=0.5383, AUROC=0.8545, loss=0.2876, thr=0.30, F1=0.5193, P=0.4670, R=0.5849
+[AUTHORS] acc=0.8852 auroc=0.8545 auprc=0.5376 minpse=0.5092 f1=0.4360
+New best model at epoch 50: val AUPRC=0.5390, AUROC=0.8551, loss=0.2873, thr=0.24, F1=0.5170, P=0.4175, R=0.6789
+[AUTHORS] acc=0.8836 auroc=0.8551 auprc=0.5382 minpse=0.4931 f1=0.4150
+New best model at epoch 56: val AUPRC=0.5400, AUROC=0.8587, loss=0.2854, thr=0.25, F1=0.5232, P=0.4393, R=0.6468
+[AUTHORS] acc=0.8845 auroc=0.8587 auprc=0.5392 minpse=0.5138 f1=0.4448
+New best model at epoch 61: val AUPRC=0.5446, AUROC=0.8582, loss=0.2887, thr=0.33, F1=0.5383, P=0.4802, R=0.6124
+[AUTHORS] acc=0.8818 auroc=0.8582 auprc=0.5440 minpse=0.5114 f1=0.4716
+New best model at epoch 68: val AUPRC=0.5489, AUROC=0.8561, loss=0.2901, thr=0.36, F1=0.5267, P=0.4920, R=0.5665
+[AUTHORS] acc=0.8818 auroc=0.8561 auprc=0.5483 minpse=0.5126 f1=0.4730
+New best model at epoch 71: val AUPRC=0.5508, AUROC=0.8592, loss=0.2842, thr=0.29, F1=0.5351, P=0.4808, R=0.6032
+[AUTHORS] acc=0.8849 auroc=0.8592 auprc=0.5502 minpse=0.5229 f1=0.4438
+
+=== Final Test Results ===
+best_epoch=71  best_val_auprc=0.5508
+
+-- threshold-free --
+   auprc: 0.4786
+   auroc: 0.8562
+    loss: 0.2655
+
+-- authors-style @best_val_thr --
+acc=0.8671  f1=0.4905  auroc=0.8562  auprc=0.4786  minpse=0.5030  thr_used=0.29
+
+=== AUTHORS-STYLE TEST METRICS ===
+acc=0.895241
+auroc=0.856151
+auprc=0.477340
+minpse=0.488127
+f1_score=0.408377
+prec0=0.915377
+prec1=0.587940
+rec0=0.971349
+rec1=0.312834
+
+-- fixed @thr=0.66 --
+acc=0.8952  f1=0.3096  auroc=0.8562  auprc=0.4786  minpse=0.5736
