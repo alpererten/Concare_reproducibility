@@ -34,44 +34,62 @@ def _load_value_channel_mapping(config_path: Path):
 
 class MissingAwareTemporalAttention(nn.Module):
     """
-    Temporal attention with SMART-style mask biasing.
+    ConCare time-aware attention augmented with SMART-style mask biasing.
     Observed timesteps receive a larger additive bias than missing ones.
     """
-    def __init__(self, hidden_dim, attention_hidden_dim=16):
+    def __init__(self, hidden_dim, attention_hidden_dim=8):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.attention_hidden_dim = attention_hidden_dim
-        self.query_proj = nn.Linear(hidden_dim, attention_hidden_dim)
-        self.key_proj = nn.Linear(hidden_dim, attention_hidden_dim)
-        nn.init.kaiming_uniform_(self.query_proj.weight, a=math.sqrt(5))
-        nn.init.kaiming_uniform_(self.key_proj.weight, a=math.sqrt(5))
-        self.obs_bias = nn.Parameter(torch.tensor(2.0))
+
+        self.Wt = nn.Parameter(torch.randn(hidden_dim, attention_hidden_dim))
+        self.Wx = nn.Parameter(torch.randn(hidden_dim, attention_hidden_dim))
+        nn.init.kaiming_uniform_(self.Wx, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.Wt, a=math.sqrt(5))
+
+        self.rate = nn.Parameter(torch.zeros(1) + 0.8)
+        self.obs_bias = nn.Parameter(torch.tensor(0.5))
         self.miss_bias = nn.Parameter(torch.tensor(0.0))
+
         self.softmax = nn.Softmax(dim=1)
+        self.sigmoid = nn.Sigmoid()
+        self.relu = nn.ReLU()
 
     def forward(self, H, mask):
         """
         Args:
             H: [B, T, hidden_dim] GRU outputs for a single feature dimension.
-            mask: [B, T] float/bool mask (1 if observed).
+            mask: [B, T] float/bool mask (1 if observed). If None, treated as all ones.
         Returns:
             context: [B, hidden_dim]
             attn:    [B, T] attention weights over timesteps
         """
-        if mask.dim() != 2 or mask.size(1) != H.size(1):
-            raise ValueError("Mask must be [B, T] to match hidden states.")
-        mask = mask.float()
-        q = self.query_proj(H[:, -1, :])  # [B, attn_dim]
-        k = self.key_proj(H)              # [B, T, attn_dim]
-        scores = torch.matmul(q.unsqueeze(1), k.transpose(1, 2)).squeeze(1)
-        scores = scores / math.sqrt(self.attention_hidden_dim)
+        B, T, _ = H.size()
+        device = H.device
+
+        # Query/key projections identical to original ConCare attention
+        q = torch.matmul(H[:, -1, :], self.Wt).unsqueeze(1)  # [B, 1, attn_dim]
+        k = torch.matmul(H, self.Wx)                         # [B, T, attn_dim]
+        dot_product = torch.matmul(q, k.transpose(1, 2)).squeeze(1)  # [B, T]
+
+        # Time indices from most recent back
+        b_time = torch.arange(T - 1, -1, -1, dtype=torch.float32, device=device).unsqueeze(0).repeat(B, 1) + 1.0
+        denom = self.sigmoid(self.rate) * (torch.log(2.72 + (1 - self.sigmoid(dot_product))) * b_time)
+        e = self.relu(self.sigmoid(dot_product) / denom)
+
+        if mask is None:
+            mask = torch.ones(B, T, device=device)
+        else:
+            if mask.dim() != 2 or mask.size(1) != T:
+                raise ValueError("Mask must be [B, T] to match hidden states.")
+            mask = mask.to(device=device, dtype=torch.float32)
 
         bias = torch.where(mask > 0.5, self.obs_bias, self.miss_bias)
-        scores = scores + bias
+        e = e + bias
 
-        alpha = self.softmax(scores)
-        context = torch.bmm(alpha.unsqueeze(1), H).squeeze(1)
-        return context, alpha
+        a = self.softmax(e)
+        v = torch.bmm(a.unsqueeze(1), H).squeeze(1)
+        return v, a
 
 
 class SingleAttentionPerFeatureNew(nn.Module):
