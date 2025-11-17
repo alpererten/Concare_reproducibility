@@ -183,11 +183,11 @@ python train.py \
   --missing_aware_freeze_epochs 5 \
   --missing_aware_mask_ratio_min 0.1 \
   --missing_aware_mask_ratio_max 0.4 \
-  --missing_aware_unfreeze_lr 2e-4 \
-  --lr 5e-4 \
+  --lr 1e3 \
   --append_masks --amp  --missing_aware_pretrain_lr 2e-4 \
-  --early_stop_patience 10 --early_stop_min_delta 0.001 --lr_scheduler cosine \
-  --missing_aware_aux_weight 0.05  --weight_decay 1e-4
+  --early_stop_patience 10 --early_stop_min_delta 0.001 \
+  --missing_aware_aux_weight 0.05  --weight_decay 1e-4 \
+  --lambda_decov 1e-4
 ```
 
 Baseline ConCare runs are unaffected unless `--missing_aware_extension` is explicitly supplied.
