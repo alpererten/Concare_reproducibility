@@ -401,52 +401,68 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
         X, D, y = X.to(device, non_blocking=True), D.to(device, non_blocking=True), y.to(device, non_blocking=True)
 
         # === Temporal cutout regularization ===
-        # Applies only during training. Ten percent chance to mask a short window.
-        # You can tweak prob and frac if you like.
         if model.training:
             B, T, F = X.shape
             apply = (T > 4) and (torch.rand(1, device=X.device).item() < 0.10)
             if apply:
                 win = max(1, int(0.10 * T))
                 start = torch.randint(0, T - win + 1, (1,), device=X.device).item()
-                # work on a clone to avoid surprising in place issues
                 X = X.clone()
                 X[:, start:start + win, :] = 0.0
         # === end temporal cutout ===
 
         optimizer.zero_grad(set_to_none=True)
+
         if scaler:
+            # Forward in bfloat16 under autocast
             with amp.autocast("cuda", dtype=torch.bfloat16):
                 logits, decov = model(X, D)
-                decov = _sanitize_decov(decov)
-                bce = criterion(logits, y)
-                loss = bce + lambda_decov * decov
+
+            # Leave autocast: sanitize + cast to float32 for stable loss math
+            decov = _sanitize_decov(decov).float()
+            p = logits.float()
+            y_f = y.float()
+
+            bce = criterion(p, y_f)
+            loss = bce + lambda_decov * decov
+
             if not torch.isfinite(loss):
                 for g in optimizer.param_groups:
                     g['lr'] = max(g['lr'] * 0.5, 1e-6)
                 if batch_idx % 50 == 0:
-                    print(f"[WARN] Non-finite loss at epoch {epoch} batch {batch_idx}; "
-                          f"decov={float(decov):.6f} bce={float(bce):.6f}; "
-                          f"lowering LR to {optimizer.param_groups[0]['lr']:.2e} and skipping batch")
+                    print(
+                        f"[WARN] Non-finite loss at epoch {epoch} batch {batch_idx}; "
+                        f"decov={float(decov):.6f} bce={float(bce):.6f}; "
+                        f"lowering LR to {optimizer.param_groups[0]['lr']:.2e} and skipping batch"
+                    )
                 scaler.update()
                 continue
+
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer); scaler.update()
+            scaler.step(optimizer)
+            scaler.update()
+
         else:
             logits, decov = model(X, D)
             decov = _sanitize_decov(decov)
-            bce = criterion(logits, y)
+            p = logits.float()
+            y_f = y.float()
+            bce = criterion(p, y_f)
             loss = bce + lambda_decov * decov
+
             if not torch.isfinite(loss):
                 for g in optimizer.param_groups:
                     g['lr'] = max(g['lr'] * 0.5, 1e-6)
                 if batch_idx % 50 == 0:
-                    print(f"[WARN] Non-finite loss at epoch {epoch} batch {batch_idx}; "
-                          f"decov={float(decov):.6f} bce={float(bce):.6f}; "
-                          f"lowering LR to {optimizer.param_groups[0]['lr']:.2e} and skipping batch")
+                    print(
+                        f"[WARN] Non-finite loss at epoch {epoch} batch {batch_idx}; "
+                        f"decov={float(decov):.6f} bce={float(bce):.6f}; "
+                        f"lowering LR to {optimizer.param_groups[0]['lr']:.2e} and skipping batch"
+                    )
                 continue
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
@@ -454,6 +470,7 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
         total_loss += loss.item() * X.size(0)
         probs.append(logits.detach().to(torch.float32).cpu().numpy())
         labels.append(y.detach().to(torch.float32).cpu().numpy())
+
         if batch_idx == 0:
             print(f"[DIAG] Epoch {epoch} batch {batch_idx} decov={float(decov):.6f} bce={float(bce):.6f}")
 
