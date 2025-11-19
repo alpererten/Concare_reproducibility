@@ -82,6 +82,16 @@ metrics:
       f1: 0.4728
       minpse: 0.527
     source: "Regenerated_Project_Code/results/train_val_test_log_2025-11-16_14-19-58 A0.txt"
+instrumentation:
+  signal_check:
+    path: null
+    status: "not_collected"
+    summary: null
+  perturbations:
+    path: null
+    missingness_curve: null
+    truncation_curve: null
+    notes: null
 effect_size:
   mimic_iii:
     vs_parent: null

@@ -1,4 +1,4 @@
-experiment_id: "2025-11-16_missing_aware_full_arch_A1"
+experiment_id: "2025-11-16_missing_aware_full_arch_C1"
 parent_id: "2025-11-16_missing_aware_baseline_a0"
 date: "2025-11-16"
 owner: "codex_agent"
@@ -82,6 +82,16 @@ metrics:
       f1: 0.4652
       minpse: 0.5298
     source: "Regenerated_Project_Code/results/train_val_test_log_2025-11-16_16-57-08 best of both world.txt"
+instrumentation:
+  signal_check:
+    path: null
+    status: "not_collected"
+    summary: null
+  perturbations:
+    path: null
+    missingness_curve: null
+    truncation_curve: null
+    notes: null
 effect_size:
   mimic_iii:
     vs_parent:

@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from train_helpers import RAMDataset, pad_collate as ram_pad_collate
 from train_helpers import set_seed
+from instrumentation import InstrumentationManager
 try:
     from sklearn.model_selection import StratifiedKFold, train_test_split
 except Exception:  # pragma: no cover - optional dependency
@@ -352,6 +353,23 @@ def build_argparser():
                    help="Path to authors' TEST listfile.csv")
     # --------------------------------------------------------------
 
+    # -------- Instrumentation options --------
+    p.add_argument("--instrument_signals", action="store_true",
+                   help="Capture gradient/activation/attention stats for a few batches each epoch")
+    p.add_argument("--instrumentation_dir", type=str, default="instrumentation_data",
+                   help="Folder where instrumentation JSON summaries are stored")
+    p.add_argument("--instrumentation_probe_batches", type=int, default=2,
+                   help="Number of training batches per epoch to record instrumentation for")
+    p.add_argument("--instrumentation_eval_batches", type=int, default=4,
+                   help="Number of validation batches to use when computing perturbation curves")
+    p.add_argument("--instrumentation_mask_rates", type=str, default="0.0,0.2,0.4,0.6",
+                   help="Comma-separated mask rates for missingness sensitivity curves")
+    p.add_argument("--instrumentation_truncation_keep_ratios", type=str, default="1.0,0.75,0.5",
+                   help="Comma-separated keep ratios for sequence truncation curves")
+    p.add_argument("--instrumentation_tag", type=str, default=None,
+                   help="Optional identifier for instrumentation artifacts (defaults to timestamp)")
+    # -----------------------------------------
+
     return p
 
 
@@ -663,7 +681,8 @@ def select_metric_fn(papers_mode: bool):
     return ours_binary_metrics, "local"
 
 
-def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoch, criterion, metric_fn, aux_cfg=None):
+def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoch, criterion, metric_fn, aux_cfg=None,
+                    instrumentation=None):
     model.train()
     total_loss = 0.0
     probs, labels = [], []
@@ -671,6 +690,8 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
     aux_weight = aux_cfg["weight"] if aux_cfg else 0.0
     aux_ratio = aux_cfg["ratio"] if aux_cfg else 0.0
     for batch_idx, (X, D, y) in enumerate(loader):
+        if instrumentation:
+            instrumentation.begin_batch(batch_idx, stage="train")
         X, D, y = X.to(device, non_blocking=True), D.to(device, non_blocking=True), y.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
         if scaler:
@@ -702,6 +723,8 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if instrumentation:
+                instrumentation.after_backward()
             scaler.step(optimizer); scaler.update()
         else:
             logits, decov = model(X, D)
@@ -728,6 +751,8 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
                 continue
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if instrumentation:
+                instrumentation.after_backward()
             optimizer.step()
 
         total_loss += loss.item() * X.size(0)
@@ -735,6 +760,8 @@ def train_one_epoch(model, loader, optimizer, scaler, device, lambda_decov, epoc
         labels.append(y.detach().to(torch.float32).cpu().numpy())
         if batch_idx == 0:
             print(f"[DIAG] Epoch {epoch} batch {batch_idx} decov={float(decov):.6f} bce={float(bce):.6f}")
+        if instrumentation:
+            instrumentation.end_batch()
 
     y_true = np.concatenate(labels).ravel()
     y_prob = np.concatenate(probs).ravel()
@@ -837,6 +864,7 @@ def run_training_cycle(args, variant_meta, metric_fn, metric_source,
         diag_preflight(train_ds, args.device, ram_pad_collate, args)
 
     model = make_model(input_dim, args.device, args, use_compile=args.compile)
+    instrumentation_mgr = InstrumentationManager(model, args) if args.instrument_signals else None
 
     if args.missing_aware_extension and args.missing_aware_pretrain_epochs > 0:
         _run_missing_aware_pretraining(model, train_loader, args)
@@ -911,8 +939,13 @@ def run_training_cycle(args, variant_meta, metric_fn, metric_source,
         if args.missing_aware_extension and args.missing_aware_aux_weight > 0.0:
             aux_cfg = {"weight": args.missing_aware_aux_weight, "ratio": args.missing_aware_mask_ratio_min}
 
-        tr = train_one_epoch(model, train_loader, optimizer, scaler, args.device, lambda_decov, epoch, criterion, metric_fn, aux_cfg=aux_cfg)
+        if instrumentation_mgr:
+            instrumentation_mgr.begin_epoch(epoch)
+        tr = train_one_epoch(model, train_loader, optimizer, scaler, args.device, lambda_decov, epoch, criterion,
+                             metric_fn, aux_cfg=aux_cfg, instrumentation=instrumentation_mgr)
         va, yv_true, yv_prob = evaluate(model, val_loader, args.device, criterion, metric_fn)
+        if instrumentation_mgr:
+            instrumentation_mgr.end_epoch()
 
         print(f"Epoch {epoch:03d} | Train loss {tr['loss']:.4f} AUPRC {tr['auprc']:.4f} AUROC {tr['auroc']:.4f} | "
               f"Val loss {va['loss']:.4f} AUPRC {va['auprc']:.4f} AUROC {va['auroc']:.4f}")
@@ -1040,6 +1073,10 @@ def run_training_cycle(args, variant_meta, metric_fn, metric_source,
     print(f"\n[INFO] Saved run log to {results_path}")
     print("\n✅ Training completed successfully")
 
+    instrumentation_path = None
+    if instrumentation_mgr:
+        instrumentation_path = instrumentation_mgr.finalize(best_epoch, best_auprc, args, val_loader, metric_fn)
+
     summary = {
         "fold_tag": fold_tag,
         "results_path": results_path,
@@ -1050,6 +1087,7 @@ def run_training_cycle(args, variant_meta, metric_fn, metric_source,
         "f1_best": f1_best,
         "minpse_best": minpse_best,
         "test_metrics": test_metrics,
+        "instrumentation_path": str(instrumentation_path) if instrumentation_path else None,
     }
     if authors_test is not None:
         summary["authors_test"] = authors_test

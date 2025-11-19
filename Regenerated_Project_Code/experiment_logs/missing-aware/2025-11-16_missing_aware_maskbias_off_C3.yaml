@@ -1,17 +1,16 @@
-# Copy this file when logging a new experiment and update each field.
-experiment_id: "YYYY-MM-DD_<slug>_XX"
-parent_id: "<parent-experiment-id-or-null>"
-date: "YYYY-MM-DD"
-owner: "<your name or initials>"
+experiment_id: "2025-11-16_missing_aware_maskbias_off_C3"
+parent_id: "2025-11-16_missing_aware_baseline_a0"
+date: "2025-11-16"
+owner: "codex_agent"
 dataset: "MIMIC-III in-hospital mortality"
 task: "in-hospital-mortality"
-change: "<succinct description of the code/config change>"
+change: "Ablation: “remove the extra bias and only poke the model with mild missingness by disable feature-level mask bias and narrow mask ratios (0.1-0.3) while pretraining for 10 epochs"
 belief:
   expected_final_gain: "neutral"
-  expected_stability_gain: "neutral"
+  expected_stability_gain: "small_positive"
   expected_convergence_speed_gain: "neutral"
 config:
-  command: "python train.py --epochs 100 --batch_size 256 --lr 1e-3 --amp --append_masks"
+  command: "python train.py --epochs 100 --batch_size 256 --lr 1e-3 --amp --append_masks --papers_metrics_mode --missing_aware_extension --missing_aware_pretrain_epochs 10 --missing_aware_mask_ratio_min 0.1 --missing_aware_mask_ratio_max 0.3 --missing_aware_freeze_epochs 5 --missing_aware_aux_weight 0.01 --missing_aware_disable_mask_bias --instrument_signals --instrumentation_tag 2025-11-16_missing_aware_maskbias_off_C3"
   args:
     epochs: 100
     batch_size: 256
@@ -28,19 +27,19 @@ config:
     append_masks: true
     diag: false
     compile: false
-    papers_metrics_mode: false
+    papers_metrics_mode: true
     num_workers: -1
     model_variant: "concare_full"
-    missing_aware_extension: false
-    missing_aware_pretrain_epochs: 0
+    missing_aware_extension: true
+    missing_aware_pretrain_epochs: 10
     missing_aware_pretrain_lr: null
-    missing_aware_mask_ratio_min: 0.2
-    missing_aware_mask_ratio_max: 0.8
+    missing_aware_mask_ratio_min: 0.1
+    missing_aware_mask_ratio_max: 0.3
     missing_aware_ema_decay: 0.99
-    missing_aware_freeze_epochs: 0
-    missing_aware_aux_weight: 0.0
+    missing_aware_freeze_epochs: 5
+    missing_aware_aux_weight: 0.01
     keep_prob: 0.5
-    missing_aware_disable_mask_bias: false
+    missing_aware_disable_mask_bias: true
     missing_aware_disable_temporal_attention: false
     cv_folds: 0
     cv_repeats: 1
@@ -55,6 +54,7 @@ config:
     parity_val_dir: null
     parity_val_listfile: null
     parity_test_dir: null
+    parity_test_listfile: null
     parity_test_listfile: null
 metrics:
   mimic_iii:
@@ -82,23 +82,23 @@ metrics:
       acc: null
       f1: null
       minpse: null
-    source: "<log file path or link>"
+    source: null
 instrumentation:
   signal_check:
-    path: null
-    status: "not_collected"
-    summary: "<describe gradient/activation behavior>"
+    path: "Regenerated_Project_Code/instrumentation_data/2025-11-16_missing_aware_maskbias_off_A3.json"
+    status: "pending_run"
+    summary: "Enable --instrument_signals during training to log per-layer gradients/activations."
   perturbations:
-    path: null
+    path: "Regenerated_Project_Code/instrumentation_data/2025-11-16_missing_aware_maskbias_off_A3.json"
     missingness_curve: null
     truncation_curve: null
-    notes: "<describe robustness behavior under mask/truncation sweeps>"
+    notes: "Missingness (mask-rate sweep) and truncation curves will populate after instrumentation run."
 effect_size:
   mimic_iii:
     vs_parent:
       info:
-        run: train_val_test_log_2025-11-16_14-03-23 A0.txt
-        SEL: ./2025-11-16_baseline_concare_ram.yaml
+        run: null
+        SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-16_baseline_concare_ram.yaml"
       delta:
         val:
           best_epoch: null
@@ -152,8 +152,8 @@ effect_size:
     vs_siblings:
       sibling:
         info:
-          run: null
-          SEL: null
+          run: "Regenerated_Project_Code/results/train_val_test_log_2025-11-16_16-57-08 best of both world.txt"
+          SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-16_missing_aware_full_arch.yaml"
         delta:
           val:
             best_epoch: null
@@ -206,4 +206,15 @@ effect_size:
             minpse: null
 decision: "needs_followup"
 notes: >
-  Summarize qualitative takeaways, anomalies, or TODOs.
+  Placeholder for mask-bias ablation with gentler mask ratios. Rerun with --instrument_signals and
+  instrumentation_tag=2025-11-16_missing_aware_maskbias_off_A3 to capture signal-check + robustness
+  curves while we evaluate whether biasing attention toward observed features is hurting recall.
+  
+  - We still run the latent reconstruction pretrain: the student encoder sees randomly masked inputs, the EMA teacher sees the full inputs, and we minimize the latent mismatch.
+  - The temporal attention module (MissingAwareTemporalAttention) still receives the per-timestep observation masks unless you also pass --missing_aware_disable_temporal_attention.
+  - The auxiliary latent loss during finetuning is still applied (assuming --missing_aware_aux_weight > 0).
+  - Encoder freezing, EMA updates, and the mask-aware sampling pipeline are unchanged.
+
+  So C3 would test “SMART without mask-biased feature pooling but with milder masking,” keeping the temporal mask-aware attention and latent reconstruction machinery intact.
+  
+  Run another run do evalute the effect of --missing_aware_disable_mask_bias and lower ratio if things improve.

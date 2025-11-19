@@ -91,6 +91,17 @@ notes: >
   Leave the entire section as `null`/`None` placeholders until at least one other sibling log exists, then
   update it with the sibling’s log references and deltas.
 
+### Instrumentation expectations
+
+- Every experiment that enables the new instrumentation utilities should fill in the `instrumentation`
+  block with the generated JSON path under `instrumentation_data/`.
+- `signal_check.path` should point to the per-epoch gradient/activation/attention summary. Summaries
+  should note whether gradients shifted or activations saturated relative to the parent experiment.
+- `perturbations.path` references the same JSON and the `missingness_curve` / `truncation_curve`
+  fields can store short textual summaries (e.g., “mask_rate=0.5 dropped AUROC by 0.03 vs. baseline”).
+- If instrumentation wasn’t run for a given log, set `status: "not_collected"` (or `"pending_run"`)
+  so future contributors know whether the omission is intentional.
+
 ## Workflow
 
 1. After each controlled experiment (ablations, hyper-parameter sweeps, architecture tweaks), copy `template.yaml` to a new file name like `exp_2025_11_15_concare_de_minus.yaml`.
