@@ -1,0 +1,211 @@
+experiment_id: "2025-11-18_missing_aware_maskbias_on_C5"
+parent_id: "2025-11-16_missing_aware_baseline_a0"
+date: "2025-11-18"
+owner: "codex_agent"
+dataset: "MIMIC-III in-hospital mortality"
+task: "in-hospital-mortality"
+change: "C5: revert feature-level mask bias while keeping the narrower mask sweep (0.1-0.3), pretrain 10 epochs, freeze encoder 5 epochs"
+belief:
+  expected_final_gain: "small_positive"
+  expected_stability_gain: "neutral"
+  expected_convergence_speed_gain: "neutral"
+config:
+  command: "python train.py --epochs 100 --batch_size 256 --lr 1e-3 --amp --append_masks --papers_metrics_mode --missing_aware_extension --missing_aware_pretrain_epochs 10 --missing_aware_mask_ratio_min 0.1 --missing_aware_mask_ratio_max 0.3 --missing_aware_freeze_epochs 5 --missing_aware_aux_weight 0.01 --instrument_signals --instrumentation_tag 2025-11-18_missing_aware_maskbias_on_C5"
+  args:
+    epochs: 100
+    batch_size: 256
+    lr: 0.001
+    lr_scheduler: "none"
+    weight_decay: 0.0
+    lambda_decov: 0.0001
+    amp: true
+    device: "cuda"
+    save_dir: "trained_models"
+    results_dir: "results"
+    cache_dir: "data/normalized_data_cache_train"
+    timestep: 0.8
+    append_masks: true
+    diag: false
+    compile: false
+    papers_metrics_mode: true
+    num_workers: -1
+    model_variant: "concare_full"
+    missing_aware_extension: true
+    missing_aware_pretrain_epochs: 10
+    missing_aware_pretrain_lr: null
+    missing_aware_mask_ratio_min: 0.1
+    missing_aware_mask_ratio_max: 0.3
+    missing_aware_ema_decay: 0.99
+    missing_aware_freeze_epochs: 5
+    missing_aware_aux_weight: 0.01
+    keep_prob: 0.5
+    missing_aware_disable_mask_bias: false
+    missing_aware_disable_temporal_attention: false
+    cv_folds: 0
+    cv_repeats: 1
+    cv_pool_splits: "train,val"
+    cv_val_ratio: 0.1
+    cv_seed: 42
+    early_stop_patience: 0
+    early_stop_min_delta: 0.0
+    parity_mode: false
+    parity_train_dir: null
+    parity_train_listfile: null
+    parity_val_dir: null
+    parity_val_listfile: null
+    parity_test_dir: null
+    parity_test_listfile: null
+metrics:
+  mimic_iii:
+    val:
+      best_epoch: null
+      auroc: null
+      auprc: null
+      f1: null
+      precision: null
+      recall: null
+      threshold: null
+    test_threshold_free:
+      auroc: null
+      auprc: null
+      loss: null
+    test_authors:
+      acc: null
+      auroc: null
+      auprc: null
+      minpse: null
+      f1: null
+      threshold: null
+    test_fixed_thr:
+      threshold: 0.66
+      acc: null
+      f1: null
+      minpse: null
+    source: null
+instrumentation:
+  signal_check:
+    path: "Regenerated_Project_Code/instrumentation_data/2025-11-18_missing_aware_maskbias_on_C5.json"
+    status: "pending_run"
+    summary: "Log signal traces for the bias-on, narrow-mask configuration to compare with C3/C4."
+  perturbations:
+    path: "Regenerated_Project_Code/instrumentation_data/2025-11-18_missing_aware_maskbias_on_C5.json"
+    missingness_curve: null
+    truncation_curve: null
+    notes: "Missingness/truncation sweeps populate once instrumentation completes."
+effect_size:
+  mimic_iii:
+    vs_parent:
+      info:
+        run: null
+        SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-16_baseline_concare_ram.yaml"
+      delta:
+        val:
+          best_epoch: null
+          auroc: null
+          auprc: null
+          f1: null
+          precision: null
+          recall: null
+          threshold: null
+        test_threshold_free:
+          auroc: null
+          auprc: null
+          loss: null
+        test_authors:
+          acc: null
+          auroc: null
+          auprc: null
+          minpse: null
+          f1: null
+          threshold: null
+        test_fixed_thr:
+          threshold: 0.66
+          acc: null
+          f1: null
+          minpse: null
+      pct:
+        val:
+          best_epoch: null
+          auroc: null
+          auprc: null
+          f1: null
+          precision: null
+          recall: null
+          threshold: null
+        test_threshold_free:
+          auroc: null
+          auprc: null
+          loss: null
+        test_authors:
+          acc: null
+          auroc: null
+          auprc: null
+          minpse: null
+          f1: null
+          threshold: null
+        test_fixed_thr:
+          threshold: 0.66
+          acc: null
+          f1: null
+          minpse: null
+    vs_siblings:
+      sibling:
+        info:
+          run: null
+          SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-16_missing_aware_maskbias_off_C3.yaml"
+        delta:
+          val:
+            best_epoch: null
+            auroc: null
+            auprc: null
+            f1: null
+            precision: null
+            recall: null
+            threshold: null
+          test_threshold_free:
+            auroc: null
+            auprc: null
+            loss: null
+          test_authors:
+            acc: null
+            auroc: null
+            auprc: null
+            minpse: null
+            f1: null
+            threshold: null
+          test_fixed_thr:
+            threshold: 0.66
+            acc: null
+            f1: null
+            minpse: null
+        pct:
+          val:
+            best_epoch: null
+            auroc: null
+            auprc: null
+            f1: null
+            precision: null
+            recall: null
+            threshold: null
+          test_threshold_free:
+            auroc: null
+            auprc: null
+            loss: null
+          test_authors:
+            acc: null
+            auroc: null
+            auprc: null
+            minpse: null
+            f1: null
+            threshold: null
+          test_fixed_thr:
+            threshold: 0.66
+            acc: null
+            f1: null
+            minpse: null
+decision: "planned_run"
+notes: >
+  Purpose: isolate whether the recall drop in C3 came solely from removing mask bias. C5 keeps the
+  gentler mask ratios (0.1-0.3) but re-enables mask-biased feature attention to see if AUROC/AUPRC
+  rebound without returning to the full C1 configuration. Keep the rest of the SMART knobs identical
+  (10 pretrain epochs, 5 freeze epochs, aux weight 0.01) and gather signal traces for comparison.

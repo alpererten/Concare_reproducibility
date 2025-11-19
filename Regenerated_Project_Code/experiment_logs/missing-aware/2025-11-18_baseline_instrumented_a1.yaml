@@ -1,0 +1,156 @@
+experiment_id: "2025-11-18_baseline_instrumented_a1"
+parent_id: "2025-11-16_missing_aware_baseline_a0"
+date: "2025-11-18"
+owner: "codex_agent"
+dataset: "MIMIC-III in-hospital mortality"
+task: "in-hospital-mortality"
+change: "Baseline ConCare RAM run with instrumentation capture turned on (--instrument_signals, --instrumentation_tag 2025-11-18_baseline_instrumented_a1)"
+belief:
+  expected_final_gain: "neutral"
+  expected_stability_gain: "neutral"
+  expected_convergence_speed_gain: "neutral"
+config:
+  command: "python train.py --epochs 100 --batch_size 256 --lr 1e-3 --amp --append_masks --papers_metrics_mode --instrument_signals --instrumentation_tag 2025-11-18_baseline_instrumented_a1"
+  args:
+    epochs: 100
+    batch_size: 256
+    lr: 0.001
+    lr_scheduler: "none"
+    weight_decay: 0.0
+    lambda_decov: 0.0001
+    amp: true
+    device: "cuda"
+    save_dir: "trained_models"
+    results_dir: "results"
+    cache_dir: "data/normalized_data_cache_train"
+    timestep: 0.8
+    append_masks: true
+    diag: false
+    compile: false
+    papers_metrics_mode: true
+    num_workers: -1
+    model_variant: "concare_full"
+    missing_aware_extension: false
+    missing_aware_pretrain_epochs: 0
+    missing_aware_pretrain_lr: null
+    missing_aware_mask_ratio_min: 0.2
+    missing_aware_mask_ratio_max: 0.8
+    missing_aware_ema_decay: 0.99
+    missing_aware_freeze_epochs: 0
+    missing_aware_aux_weight: 0.0
+    keep_prob: 0.5
+    missing_aware_disable_mask_bias: false
+    missing_aware_disable_temporal_attention: false
+    cv_folds: 0
+    cv_repeats: 1
+    cv_pool_splits: "train,val"
+    cv_val_ratio: 0.1
+    cv_seed: 42
+    early_stop_patience: 0
+    early_stop_min_delta: 0.0
+    parity_mode: false
+    parity_train_dir: null
+    parity_train_listfile: null
+    parity_val_dir: null
+    parity_val_listfile: null
+    parity_test_dir: null
+    parity_test_listfile: null
+metrics:
+  mimic_iii:
+    val:
+      best_epoch: null
+      auroc: null
+      auprc: null
+      f1: null
+      precision: null
+      recall: null
+      threshold: null
+    test_threshold_free:
+      auroc: null
+      auprc: null
+      loss: null
+    test_authors:
+      acc: null
+      auroc: null
+      auprc: null
+      minpse: null
+      f1: null
+      threshold: null
+    test_fixed_thr:
+      threshold: 0.66
+      acc: null
+      f1: null
+      minpse: null
+    source: null
+instrumentation:
+  signal_check:
+    path: "Regenerated_Project_Code/instrumentation_data/2025-11-18_baseline_instrumented_a1.json"
+    status: "pending_run"
+    summary: "Enable --instrument_signals during baseline training to capture gradients/activations for later comparisons."
+  perturbations:
+    path: "Regenerated_Project_Code/instrumentation_data/2025-11-18_baseline_instrumented_a1.json"
+    missingness_curve: null
+    truncation_curve: null
+    notes: "Missingness/truncation probes will populate once instrumentation post-pass completes."
+effect_size:
+  mimic_iii:
+    vs_parent:
+      info:
+        run: null
+        SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-16_baseline_concare_ram.yaml"
+      delta:
+        val:
+          best_epoch: null
+          auroc: null
+          auprc: null
+          f1: null
+          precision: null
+          recall: null
+          threshold: null
+        test_threshold_free:
+          auroc: null
+          auprc: null
+          loss: null
+        test_authors:
+          acc: null
+          auroc: null
+          auprc: null
+          minpse: null
+          f1: null
+          threshold: null
+        test_fixed_thr:
+          threshold: 0.66
+          acc: null
+          f1: null
+          minpse: null
+      pct:
+        val:
+          best_epoch: null
+          auroc: null
+          auprc: null
+          f1: null
+          precision: null
+          recall: null
+          threshold: null
+        test_threshold_free:
+          auroc: null
+          auprc: null
+          loss: null
+        test_authors:
+          acc: null
+          auroc: null
+          auprc: null
+          minpse: null
+          f1: null
+          threshold: null
+        test_fixed_thr:
+          threshold: 0.66
+          acc: null
+          f1: null
+          minpse: null
+decision: "planned_run"
+notes: >
+  Placeholder entry for the baseline-with-instrumentation run. Mirrors the A0 configuration but adds
+  --instrument_signals so we can collect teacher/student gradient and activation summaries for future
+  SMART comparisons. Populate metrics, effect_size, and instrumentation curves once the run finishes
+  and the instrumentation JSON is available.
