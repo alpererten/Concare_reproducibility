@@ -103,10 +103,10 @@ EMA teacher branch, latent reconstruction loss, and optional auxiliary path duri
 flowchart LR
     subgraph Finetune
         F1[Masked/Observed Sequence]
-        F2[Student Encoder (pretrained weights)]
-        F3[Feature Attention + Mask Bias (optional)]
+        F2[Student Encoder - pretrained weight]
+        F3[Feature Attention + Mask Bias - optional]
         F4[Prediction Head]
-        AUX[Aux Latent Loss (optional)]
+        AUX[Aux Latent Loss - optional]
     end
 
     F1 --> F2 --> F3 --> F4
