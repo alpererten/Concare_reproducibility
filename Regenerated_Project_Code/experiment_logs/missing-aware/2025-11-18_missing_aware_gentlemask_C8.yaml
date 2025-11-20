@@ -1,0 +1,210 @@
+experiment_id: "2025-11-18_missing_aware_gentlemask_C8"
+parent_id: "2025-11-16_missing_aware_baseline_a0"
+date: "2025-11-18"
+owner: "codex_agent"
+dataset: "MIMIC-III in-hospital mortality"
+task: "in-hospital-mortality"
+change: "C8: No-pretrain SMART with very gentle masking (0.05-0.2), mask bias off"
+belief:
+  expected_final_gain: "small_positive"
+  expected_stability_gain: "neutral"
+  expected_convergence_speed_gain: "neutral"
+config:
+  command: "python train.py --epochs 100 --batch_size 256 --lr 1e-3 --weight_decay 0 --lambda_decov 1e-4 --amp --append_masks --papers_metrics_mode --missing_aware_extension --missing_aware_pretrain_epochs 0 --missing_aware_freeze_epochs 0 --missing_aware_mask_ratio_min 0.05 --missing_aware_mask_ratio_max 0.2 --missing_aware_disable_mask_bias --missing_aware_pretrain_lr 2e-4 --missing_aware_aux_weight 0.0 --keep_prob 0.5 --lr_scheduler none --early_stop_patience 10 --early_stop_min_delta 0.001 --cache_dir data/normalized_data_cache_train --instrument_signals --instrumentation_tag 2025-11-18_missing_aware_gentlemask_C8"
+  args:
+    epochs: 100
+    batch_size: 256
+    lr: 0.001
+    lr_scheduler: "none"
+    weight_decay: 0.0
+    lambda_decov: 0.0001
+    amp: true
+    device: "cuda"
+    save_dir: "trained_models"
+    results_dir: "results"
+    cache_dir: "data/normalized_data_cache_train"
+    timestep: 0.8
+    append_masks: true
+    diag: false
+    compile: false
+    papers_metrics_mode: true
+    num_workers: -1
+    model_variant: "concare_full"
+    missing_aware_extension: true
+    missing_aware_pretrain_epochs: 0
+    missing_aware_pretrain_lr: 0.0002
+    missing_aware_mask_ratio_min: 0.05
+    missing_aware_mask_ratio_max: 0.2
+    missing_aware_ema_decay: 0.99
+    missing_aware_freeze_epochs: 0
+    missing_aware_aux_weight: 0.0
+    keep_prob: 0.5
+    missing_aware_disable_mask_bias: true
+    missing_aware_disable_temporal_attention: false
+    cv_folds: 0
+    cv_repeats: 1
+    cv_pool_splits: "train,val"
+    cv_val_ratio: 0.1
+    cv_seed: 42
+    early_stop_patience: 10
+    early_stop_min_delta: 0.001
+    parity_mode: false
+    parity_train_dir: null
+    parity_train_listfile: null
+    parity_val_dir: null
+    parity_val_listfile: null
+    parity_test_dir: null
+    parity_test_listfile: null
+metrics:
+  mimic_iii:
+    val:
+      best_epoch: 21
+      auroc: 0.8472
+      auprc: 0.5331
+      f1: 0.5242
+      precision: 0.4844
+      recall: 0.5711
+      threshold: 0.34
+    test_threshold_free:
+      auroc: 0.8465
+      auprc: 0.468
+      loss: 0.304
+    test_authors:
+      acc: 0.882571
+      auroc: 0.84647
+      auprc: 0.46695
+      minpse: 0.472441
+      f1: 0.454023
+      threshold: 0.34
+    test_fixed_thr:
+      threshold: 0.66
+      acc: 0.8909
+      f1: 0.4027
+      minpse: 0.5667
+    source: "Regenerated_Project_Code/results/train_val_test_log_2025-11-19_03-34-21.txt"
+instrumentation:
+  signal_check:
+    path: "Regenerated_Project_Code/instrumentation_data/2025-11-18_missing_aware_gentlemask_C8.json"
+    status: "pending_run"
+    summary: "Instrumentation for the tiny-mask no-pretrain SMART variant."
+  perturbations:
+    path: "Regenerated_Project_Code/instrumentation_data/2025-11-18_missing_aware_gentlemask_C8.json"
+    missingness_curve: null
+    truncation_curve: null
+    notes: "Populate once instrumentation finishes."
+effect_size:
+  mimic_iii:
+    vs_parent:
+      info:
+        run: "Regenerated_Project_Code/results/train_val_test_log_2025-11-18_23-21-34.txt"
+        SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-18_baseline_instrumented_a1.yaml"
+      delta:
+        val:
+          best_epoch: -3
+          auroc: 0.0074
+          auprc: 0.0007
+          f1: 0.0092
+          precision: 0.0388
+          recall: -0.039
+          threshold: -0.16
+        test_threshold_free:
+          auroc: -0.0011
+          auprc: 0.0026
+          loss: -0.0459
+        test_authors:
+          acc: 0.033065
+          auroc: -0.00118
+          auprc: 0.002991
+          minpse: -0.006169
+          f1: -0.021757
+          threshold: -0.16
+        test_fixed_thr:
+          threshold: 0.66
+          acc: 0.0108
+          f1: -0.0701
+          minpse: 0.0397
+      pct:
+        val:
+          best_epoch: -0.125
+          auroc: 0.008812
+          auprc: 0.001315
+          f1: 0.017864
+          precision: 0.087074
+          recall: -0.063924
+          threshold: -0.32
+        test_threshold_free:
+          auroc: -0.001298
+          auprc: 0.005587
+          loss: -0.13118
+        test_authors:
+          acc: 0.038923
+          auroc: -0.001392
+          auprc: 0.006447
+          minpse: -0.012889
+          f1: -0.045729
+          threshold: -0.32
+        test_fixed_thr:
+          threshold: 0.0
+          acc: 0.012271
+          f1: -0.148266
+          minpse: 0.075332
+    vs_siblings:
+      sibling:
+        info:
+          run: "Regenerated_Project_Code/results/train_val_test_log_2025-11-19_03-23-13.txt"
+          SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-18_missing_aware_nopretrain_C7.yaml"
+        delta:
+          val:
+            best_epoch: 0
+            auroc: 0.0
+            auprc: 0.0
+            f1: 0.0
+            precision: 0.0
+            recall: 0.0
+            threshold: 0.0
+          test_threshold_free:
+            auroc: 0.0
+            auprc: 0.0
+            loss: 0.0
+          test_authors:
+            acc: 0.0
+            auroc: 0.0
+            auprc: 0.0
+            minpse: 0.0
+            f1: 0.0
+            threshold: 0.0
+          test_fixed_thr:
+            threshold: 0.66
+            acc: 0.0
+            f1: 0.0
+            minpse: 0.0
+        pct:
+          val:
+            best_epoch: 0.0
+            auroc: 0.0
+            auprc: 0.0
+            f1: 0.0
+            precision: 0.0
+            recall: 0.0
+            threshold: 0.0
+          test_threshold_free:
+            auroc: 0.0
+            auprc: 0.0
+            loss: 0.0
+          test_authors:
+            acc: 0.0
+            auroc: 0.0
+            auprc: 0.0
+            minpse: 0.0
+            f1: 0.0
+            threshold: 0.0
+          test_fixed_thr:
+            threshold: 0.0
+            acc: 0.0
+            f1: 0.0
+            minpse: 0.0
+decision: "planned_run"
+notes: >
+  Variant of C7 that keeps the no-pretrain SMART setup but reduces the temporal masking ratios to
+  5-20% to test whether extremely light perturbations preserve AUROC/AUPRC while still offering a
+  bit of robustness. Run after C7 to determine if tiny mask noise is preferable to the 10-30% sweep.

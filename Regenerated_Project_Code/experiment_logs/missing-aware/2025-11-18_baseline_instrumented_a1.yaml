@@ -58,30 +58,30 @@ config:
 metrics:
   mimic_iii:
     val:
-      best_epoch: null
-      auroc: null
-      auprc: null
-      f1: null
-      precision: null
-      recall: null
-      threshold: null
+      best_epoch: 24
+      auroc: 0.8398
+      auprc: 0.5324
+      f1: 0.515
+      precision: 0.4456
+      recall: 0.6101
+      threshold: 0.5
     test_threshold_free:
-      auroc: null
-      auprc: null
-      loss: null
+      auroc: 0.8476
+      auprc: 0.4654
+      loss: 0.3499
     test_authors:
-      acc: null
-      auroc: null
-      auprc: null
-      minpse: null
-      f1: null
-      threshold: null
+      acc: 0.849506
+      auroc: 0.84765
+      auprc: 0.463959
+      minpse: 0.47861
+      f1: 0.47578
+      threshold: 0.5
     test_fixed_thr:
       threshold: 0.66
-      acc: null
-      f1: null
-      minpse: null
-    source: null
+      acc: 0.8801
+      f1: 0.4728
+      minpse: 0.527
+    source: "Regenerated_Project_Code/results/train_val_test_log_2025-11-18_23-21-34.txt"
 instrumentation:
   signal_check:
     path: "Regenerated_Project_Code/instrumentation_data/2025-11-18_baseline_instrumented_a1.json"
@@ -96,58 +96,58 @@ effect_size:
   mimic_iii:
     vs_parent:
       info:
-        run: null
+        run: "Regenerated_Project_Code/results/train_val_test_log_2025-11-16_14-19-58 A0.txt"
         SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-16_baseline_concare_ram.yaml"
       delta:
         val:
-          best_epoch: null
-          auroc: null
-          auprc: null
-          f1: null
-          precision: null
-          recall: null
-          threshold: null
+          best_epoch: 0
+          auroc: 0.0
+          auprc: 0.0
+          f1: 0.0
+          precision: 0.0
+          recall: 0.0
+          threshold: 0.0
         test_threshold_free:
-          auroc: null
-          auprc: null
-          loss: null
+          auroc: 0.0
+          auprc: 0.0
+          loss: 0.0
         test_authors:
-          acc: null
-          auroc: null
-          auprc: null
-          minpse: null
-          f1: null
-          threshold: null
+          acc: 0.0
+          auroc: 0.0
+          auprc: 0.0
+          minpse: 0.0
+          f1: 0.0
+          threshold: 0.0
         test_fixed_thr:
           threshold: 0.66
-          acc: null
-          f1: null
-          minpse: null
+          acc: 0.0
+          f1: 0.0
+          minpse: 0.0
       pct:
         val:
-          best_epoch: null
-          auroc: null
-          auprc: null
-          f1: null
-          precision: null
-          recall: null
-          threshold: null
+          best_epoch: 0.0
+          auroc: 0.0
+          auprc: 0.0
+          f1: 0.0
+          precision: 0.0
+          recall: 0.0
+          threshold: 0.0
         test_threshold_free:
-          auroc: null
-          auprc: null
-          loss: null
+          auroc: 0.0
+          auprc: 0.0
+          loss: 0.0
         test_authors:
-          acc: null
-          auroc: null
-          auprc: null
-          minpse: null
-          f1: null
-          threshold: null
+          acc: 0.0
+          auroc: 0.0
+          auprc: 0.0
+          minpse: 0.0
+          f1: 0.0
+          threshold: 0.0
         test_fixed_thr:
-          threshold: 0.66
-          acc: null
-          f1: null
-          minpse: null
+          threshold: 0.0
+          acc: 0.0
+          f1: 0.0
+          minpse: 0.0
 decision: "planned_run"
 notes: >
   Placeholder entry for the baseline-with-instrumentation run. Mirrors the A0 configuration but adds

@@ -1,35 +1,40 @@
-experiment_id: "2025-11-18_missing_aware_nofreeze_C6"
-parent_id: "2025-11-16_missing_aware_baseline_a0"
-date: "2025-11-18"
-owner: "codex_agent"
-dataset: "MIMIC-III in-hospital mortality"
-task: "in-hospital-mortality"
-change: "C6: No-freeze SMART variant (10 pretrain epochs, mask ratios 0.1-0.3, mask bias off, aux loss 0.0, no encoder freeze)"
+experiment_id: 2025-11-18_missing_aware_nofreeze_C6
+parent_id: 2025-11-16_missing_aware_baseline_a0
+date: '2025-11-18'
+owner: codex_agent
+dataset: MIMIC-III in-hospital mortality
+task: in-hospital-mortality
+change: 'C6: No-freeze SMART variant (10 pretrain epochs, mask ratios 0.1-0.3, mask
+  bias off, aux loss 0.0, no encoder freeze)'
 belief:
-  expected_final_gain: "small_positive"
-  expected_stability_gain: "neutral"
-  expected_convergence_speed_gain: "neutral"
+  expected_final_gain: small_positive
+  expected_stability_gain: neutral
+  expected_convergence_speed_gain: neutral
 config:
-  command: "python train.py --epochs 100 --batch_size 256 --lr 1e-3 --amp --append_masks --papers_metrics_mode --missing_aware_extension --missing_aware_pretrain_epochs 10 --missing_aware_freeze_epochs 0 --missing_aware_mask_ratio_min 0.1 --missing_aware_mask_ratio_max 0.3 --missing_aware_aux_weight 0.0 --missing_aware_disable_mask_bias --instrument_signals --instrumentation_tag 2025-11-18_missing_aware_nofreeze_C6"
+  command: python train.py --epochs 100 --batch_size 256 --lr 1e-3 --amp --append_masks
+    --papers_metrics_mode --missing_aware_extension --missing_aware_pretrain_epochs
+    10 --missing_aware_freeze_epochs 0 --missing_aware_mask_ratio_min 0.1 --missing_aware_mask_ratio_max
+    0.3 --missing_aware_aux_weight 0.0 --missing_aware_disable_mask_bias --instrument_signals
+    --instrumentation_tag 2025-11-18_missing_aware_nofreeze_C6
   args:
     epochs: 100
     batch_size: 256
     lr: 0.001
-    lr_scheduler: "none"
+    lr_scheduler: none
     weight_decay: 0.0
     lambda_decov: 0.0001
     amp: true
-    device: "cuda"
-    save_dir: "trained_models"
-    results_dir: "results"
-    cache_dir: "data/normalized_data_cache_train"
+    device: cuda
+    save_dir: trained_models
+    results_dir: results
+    cache_dir: data/normalized_data_cache_train
     timestep: 0.8
     append_masks: true
     diag: false
     compile: false
     papers_metrics_mode: true
     num_workers: -1
-    model_variant: "concare_full"
+    model_variant: concare_full
     missing_aware_extension: true
     missing_aware_pretrain_epochs: 10
     missing_aware_pretrain_lr: null
@@ -43,7 +48,7 @@ config:
     missing_aware_disable_temporal_attention: false
     cv_folds: 0
     cv_repeats: 1
-    cv_pool_splits: "train,val"
+    cv_pool_splits: train,val
     cv_val_ratio: 0.1
     cv_seed: 42
     early_stop_patience: 0
@@ -58,155 +63,201 @@ config:
 metrics:
   mimic_iii:
     val:
-      best_epoch: null
-      auroc: null
-      auprc: null
-      f1: null
-      precision: null
-      recall: null
-      threshold: null
+      best_epoch: 35
+      auroc: 0.8437
+      auprc: 0.531
+      f1: 0.5135
+      precision: 0.4421
+      recall: 0.6124
+      threshold: 0.3
     test_threshold_free:
-      auroc: null
-      auprc: null
-      loss: null
+      auroc: 0.8429
+      auprc: 0.453
+      loss: 0.3212
     test_authors:
-      acc: null
-      auroc: null
-      auprc: null
-      minpse: null
-      f1: null
-      threshold: null
+      acc: 0.878245
+      auroc: 0.842914
+      auprc: 0.451862
+      minpse: 0.470588
+      f1: 0.466125
+      threshold: 0.3
     test_fixed_thr:
       threshold: 0.66
-      acc: null
-      f1: null
-      minpse: null
-    source: null
+      acc: 0.8872
+      f1: 0.427
+      minpse: 0.5596
+    source: "Regenerated_Project_Code/results/train_val_test_log_2025-11-19_02-47-28.txt"
 instrumentation:
   signal_check:
-    path: "Regenerated_Project_Code/instrumentation_data/2025-11-18_missing_aware_nofreeze_C6.json"
-    status: "pending_run"
-    summary: "Track encoder dynamics when SMART pretraining is followed by immediate fine-tuning (no freeze)."
+    path: Regenerated_Project_Code/instrumentation_data/2025-11-18_missing_aware_nofreeze_C6.json
+    status: pending_run
+    summary: "Gradient norms vs parent: FinalAttentionQKV: mean=0.0196 (\u0394 -0.0072);\
+      \ GRUs: mean=0.0004 (\u0394 -0.0006); MultiHeadedAttention: mean=0.0209 (\u0394\
+      \ +0.0043); PositionwiseFeedForward: mean=0.0306 (\u0394 -0.0288); SublayerConnection:\
+      \ mean=0.0028 (\u0394 -0.0091); TemporalAttentions: mean=0.0000; demo_proj_main:\
+      \ mean=0.0003 (\u0394 -0.0010); output0: mean=0.1341 (\u0394 +0.0182); output1:\
+      \ mean=0.2715 (\u0394 +0.0409)\nAttention stats vs parent: FinalAttentionQKV:\
+      \ entropy=3.408 (\u0394 -0.116), mean=0.017 (\u0394 +0.004); TemporalAttentions.0:\
+      \ entropy=4.088, mean=0.017; TemporalAttentions.1: entropy=4.088, mean=0.017;\
+      \ TemporalAttentions.10: entropy=4.079, mean=0.017; TemporalAttentions.11: entropy=4.079,\
+      \ mean=0.017; TemporalAttentions.12: entropy=4.082, mean=0.017; TemporalAttentions.13:\
+      \ entropy=4.077, mean=0.017; TemporalAttentions.14: entropy=4.080, mean=0.017;\
+      \ TemporalAttentions.15: entropy=4.080, mean=0.017; TemporalAttentions.16: entropy=4.081,\
+      \ mean=0.017; TemporalAttentions.17: entropy=4.080, mean=0.017; TemporalAttentions.18:\
+      \ entropy=4.081, mean=0.017; TemporalAttentions.19: entropy=4.077, mean=0.017;\
+      \ TemporalAttentions.2: entropy=4.087, mean=0.017; TemporalAttentions.20: entropy=4.079,\
+      \ mean=0.017; TemporalAttentions.21: entropy=4.075, mean=0.017; TemporalAttentions.22:\
+      \ entropy=4.079, mean=0.017; TemporalAttentions.23: entropy=4.080, mean=0.017;\
+      \ TemporalAttentions.24: entropy=4.083, mean=0.017; TemporalAttentions.25: entropy=4.083,\
+      \ mean=0.017; TemporalAttentions.26: entropy=4.083, mean=0.017; TemporalAttentions.27:\
+      \ entropy=4.079, mean=0.017; TemporalAttentions.28: entropy=4.082, mean=0.017;\
+      \ TemporalAttentions.29: entropy=4.083, mean=0.017; TemporalAttentions.3: entropy=4.075,\
+      \ mean=0.017; TemporalAttentions.30: entropy=4.084, mean=0.017; TemporalAttentions.31:\
+      \ entropy=4.081, mean=0.017; TemporalAttentions.32: entropy=4.083, mean=0.017;\
+      \ TemporalAttentions.33: entropy=4.083, mean=0.017; TemporalAttentions.34: entropy=4.084,\
+      \ mean=0.017; TemporalAttentions.35: entropy=4.085, mean=0.017; TemporalAttentions.36:\
+      \ entropy=4.081, mean=0.017; TemporalAttentions.37: entropy=4.077, mean=0.017;\
+      \ TemporalAttentions.38: entropy=4.076, mean=0.017; TemporalAttentions.39: entropy=4.079,\
+      \ mean=0.017; TemporalAttentions.4: entropy=4.079, mean=0.017; TemporalAttentions.40:\
+      \ entropy=4.079, mean=0.017; TemporalAttentions.41: entropy=4.079, mean=0.017;\
+      \ TemporalAttentions.42: entropy=4.076, mean=0.017; TemporalAttentions.43: entropy=4.075,\
+      \ mean=0.017; TemporalAttentions.44: entropy=4.079, mean=0.017; TemporalAttentions.45:\
+      \ entropy=4.079, mean=0.017; TemporalAttentions.46: entropy=4.079, mean=0.017;\
+      \ TemporalAttentions.47: entropy=4.081, mean=0.017; TemporalAttentions.48: entropy=4.074,\
+      \ mean=0.017; TemporalAttentions.49: entropy=4.080, mean=0.017; TemporalAttentions.5:\
+      \ entropy=4.082, mean=0.017; TemporalAttentions.50: entropy=4.081, mean=0.017;\
+      \ TemporalAttentions.51: entropy=4.089, mean=0.017; TemporalAttentions.52: entropy=4.088,\
+      \ mean=0.017; TemporalAttentions.53: entropy=4.085, mean=0.017; TemporalAttentions.54:\
+      \ entropy=4.083, mean=0.017; TemporalAttentions.55: entropy=4.084, mean=0.017;\
+      \ TemporalAttentions.56: entropy=4.086, mean=0.017; TemporalAttentions.57: entropy=4.079,\
+      \ mean=0.017; TemporalAttentions.58: entropy=4.072, mean=0.017; TemporalAttentions.6:\
+      \ entropy=4.079, mean=0.017; TemporalAttentions.7: entropy=4.075, mean=0.017;\
+      \ TemporalAttentions.8: entropy=4.082, mean=0.017; TemporalAttentions.9: entropy=4.082,\
+      \ mean=0.017"
   perturbations:
-    path: "Regenerated_Project_Code/instrumentation_data/2025-11-18_missing_aware_nofreeze_C6.json"
+    path: Regenerated_Project_Code/instrumentation_data/2025-11-18_missing_aware_nofreeze_C6.json
     missingness_curve: null
     truncation_curve: null
-    notes: "Populate once post-hoc instrumentation runs."
+    notes: 'Missingness curve comparison: mask_rate=0.00: AUROC=0.845, AUPRC=0.545;
+      mask_rate=0.20: AUROC=0.842, AUPRC=0.532; mask_rate=0.40: AUROC=0.836, AUPRC=0.519;
+      mask_rate=0.60: AUROC=0.832, AUPRC=0.495'
 effect_size:
   mimic_iii:
     vs_parent:
       info:
-        run: null
-        SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-16_baseline_concare_ram.yaml"
+        run: "Regenerated_Project_Code/results/train_val_test_log_2025-11-18_23-21-34.txt"
+        SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-18_baseline_instrumented_a1.yaml"
       delta:
         val:
-          best_epoch: null
-          auroc: null
-          auprc: null
-          f1: null
-          precision: null
-          recall: null
-          threshold: null
+          best_epoch: 11
+          auroc: 0.0039
+          auprc: -0.0014
+          f1: -0.0015
+          precision: -0.0035
+          recall: 0.0023
+          threshold: -0.2
         test_threshold_free:
-          auroc: null
-          auprc: null
-          loss: null
+          auroc: -0.0047
+          auprc: -0.0124
+          loss: -0.0287
         test_authors:
-          acc: null
-          auroc: null
-          auprc: null
-          minpse: null
-          f1: null
-          threshold: null
+          acc: 0.028739
+          auroc: -0.004736
+          auprc: -0.012097
+          minpse: -0.008022
+          f1: -0.009655
+          threshold: -0.2
         test_fixed_thr:
           threshold: 0.66
-          acc: null
-          f1: null
-          minpse: null
+          acc: 0.0071
+          f1: -0.0458
+          minpse: 0.0326
       pct:
         val:
-          best_epoch: null
-          auroc: null
-          auprc: null
-          f1: null
-          precision: null
-          recall: null
-          threshold: null
+          best_epoch: 0.458333
+          auroc: 0.004644
+          auprc: -0.00263
+          f1: -0.002913
+          precision: -0.007855
+          recall: 0.00377
+          threshold: -0.4
         test_threshold_free:
-          auroc: null
-          auprc: null
-          loss: null
+          auroc: -0.005545
+          auprc: -0.026644
+          loss: -0.082023
         test_authors:
-          acc: null
-          auroc: null
-          auprc: null
-          minpse: null
-          f1: null
-          threshold: null
+          acc: 0.03383
+          auroc: -0.005587
+          auprc: -0.026073
+          minpse: -0.016761
+          f1: -0.020293
+          threshold: -0.4
         test_fixed_thr:
           threshold: 0.66
-          acc: null
-          f1: null
-          minpse: null
+          acc: 0.008067
+          f1: -0.09687
+          minpse: 0.06186
     vs_siblings:
       sibling:
         info:
-          run: null
+          run: "Regenerated_Project_Code/results/train_val_test_log_2025-11-18_21-24-40.txt"
           SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-16_missing_aware_maskbias_off_C3.yaml"
         delta:
           val:
-            best_epoch: null
-            auroc: null
-            auprc: null
-            f1: null
-            precision: null
-            recall: null
-            threshold: null
+            best_epoch: 0
+            auroc: 0.0012
+            auprc: 0.0004
+            f1: -0.0055
+            precision: -0.0188
+            recall: 0.0184
+            threshold: 0.02
           test_threshold_free:
-            auroc: null
-            auprc: null
-            loss: null
+            auroc: -0.0042
+            auprc: -0.0105
+            loss: -0.0017
           test_authors:
-            acc: null
-            auroc: null
-            auprc: null
-            minpse: null
-            f1: null
-            threshold: null
+            acc: -0.001545
+            auroc: -0.004154
+            auprc: -0.010594
+            minpse: -0.001412
+            f1: 0.011707
+            threshold: 0.02
           test_fixed_thr:
             threshold: 0.66
-            acc: null
-            f1: null
-            minpse: null
+            acc: 0.0009
+            f1: 0.0038
+            minpse: -0.0042
         pct:
           val:
-            best_epoch: null
-            auroc: null
-            auprc: null
-            f1: null
-            precision: null
-            recall: null
-            threshold: null
+            best_epoch: 0.0
+            auroc: 0.001424
+            auprc: 0.000754
+            f1: -0.010597
+            precision: -0.04079
+            recall: 0.030976
+            threshold: 0.071429
           test_threshold_free:
-            auroc: null
-            auprc: null
-            loss: null
+            auroc: -0.004958
+            auprc: -0.022654
+            loss: -0.005265
           test_authors:
-            acc: null
-            auroc: null
-            auprc: null
-            minpse: null
-            f1: null
-            threshold: null
+            acc: -0.001756
+            auroc: -0.004904
+            auprc: -0.022908
+            minpse: -0.002992
+            f1: 0.025763
+            threshold: 0.071429
           test_fixed_thr:
             threshold: 0.66
-            acc: null
-            f1: null
-            minpse: null
-decision: "planned_run"
-notes: >
-  Rationale: the current SMART recipe (pretrain 10 + freeze 5) can lock the encoder into a suboptimal
-  representation for the first fine-tuning epochs. C6 keeps the mask-bias-off, 0.1-0.3 mask ratios
-  configuration but removes the freeze window and the auxiliary latent loss so the encoder can
-  immediately adapt under the supervised objective. Capture instrumentation to compare encoder
-  dynamics against C3/C4/C5 once metrics are available.
+            acc: 0.001015
+            f1: 0.008979
+            minpse: -0.007449
+decision: planned_run
+notes: 'Rationale: the current SMART recipe (pretrain 10 + freeze 5) can lock the
+  encoder into a suboptimal representation for the first fine-tuning epochs. C6 keeps
+  the mask-bias-off, 0.1-0.3 mask ratios configuration but removes the freeze window
+  and the auxiliary latent loss so the encoder can immediately adapt under the supervised
+  objective. Capture instrumentation to compare encoder dynamics against C3/C4/C5
+  once metrics are available.
+
+  '

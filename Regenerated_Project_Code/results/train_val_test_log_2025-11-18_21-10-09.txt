@@ -1,0 +1,33 @@
+=== ConCare Training Log Started (2025-11-18_21-10-09) ===
+epochs=1  batch_size=256  lr=0.001  weight_decay=0.0  lambda_decov=0.0001  effective_lambda=0.0001  amp=False  compile=False
+model_variant=concare_full (Full ConCare (multi-channel + DeCov))  uses_decov=True
+input_dim=76  timestep=0.8  append_masks=True  keep_prob=0.5
+lr_scheduler=none
+
+New best model at epoch 1: val AUPRC=0.3386, AUROC=0.7498, loss=0.3940, thr=0.11, F1=0.3940, P=0.3090, R=0.5436
+[AUTHORS] acc=0.8647 auroc=0.7498 auprc=0.3364 minpse=0.3508 f1=0.0000
+
+=== Final Test Results ===
+best_epoch=1  best_val_auprc=0.3386
+
+-- threshold-free --
+   auprc: 0.2799
+   auroc: 0.7385
+    loss: 0.3530
+
+-- authors-style @best_val_thr --
+acc=0.7809  f1=0.3742  auroc=0.7385  auprc=0.2799  minpse=0.5769  thr_used=0.11
+
+=== AUTHORS-STYLE TEST METRICS ===
+acc=0.884425
+auroc=0.738511
+auprc=0.277370
+minpse=0.306667
+f1_score=0.000000
+prec0=0.884425
+prec1=0.000000
+rec0=1.000000
+rec1=0.000000
+
+-- fixed @thr=0.66 --
+acc=0.8844  f1=0.0000  auroc=0.7385  auprc=0.2799  minpse=1.0000

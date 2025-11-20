@@ -1,0 +1,5 @@
+{
+  "status": "pending_run",
+  "reason": "Enable --instrument_signals when training this configuration to populate gradient/activation/perturbation summaries.",
+  "created_at": "2025-11-16T00:00:00Z"
+}

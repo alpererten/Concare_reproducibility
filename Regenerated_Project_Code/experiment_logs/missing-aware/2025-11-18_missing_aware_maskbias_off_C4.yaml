@@ -58,30 +58,30 @@ config:
 metrics:
   mimic_iii:
     val:
-      best_epoch: null
-      auroc: null
-      auprc: null
-      f1: null
-      precision: null
-      recall: null
-      threshold: null
+      best_epoch: 41
+      auroc: 0.8463
+      auprc: 0.5311
+      f1: 0.5097
+      precision: 0.4798
+      recall: 0.5436
+      threshold: 0.42
     test_threshold_free:
-      auroc: null
-      auprc: null
-      loss: null
+      auroc: 0.8479
+      auprc: 0.4731
+      loss: 0.3069
     test_authors:
-      acc: null
-      auroc: null
-      auprc: null
-      minpse: null
-      f1: null
-      threshold: null
+      acc: 0.875464
+      auroc: 0.84792
+      auprc: 0.472174
+      minpse: 0.472
+      f1: 0.475943
+      threshold: 0.42
     test_fixed_thr:
       threshold: 0.66
-      acc: null
-      f1: null
-      minpse: null
-    source: null
+      acc: 0.8844
+      f1: 0.4333
+      minpse: 0.5588
+    source: "Regenerated_Project_Code/results/train_val_test_log_2025-11-19_00-08-49.txt"
 instrumentation:
   signal_check:
     path: "Regenerated_Project_Code/instrumentation_data/2025-11-18_missing_aware_maskbias_off_C4.json"
@@ -96,113 +96,113 @@ effect_size:
   mimic_iii:
     vs_parent:
       info:
-        run: null
-        SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-16_baseline_concare_ram.yaml"
+        run: "Regenerated_Project_Code/results/train_val_test_log_2025-11-18_23-21-34.txt"
+        SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-18_baseline_instrumented_a1.yaml"
       delta:
         val:
-          best_epoch: null
-          auroc: null
-          auprc: null
-          f1: null
-          precision: null
-          recall: null
-          threshold: null
+          best_epoch: 17
+          auroc: 0.0065
+          auprc: -0.0013
+          f1: -0.0053
+          precision: 0.0342
+          recall: -0.0665
+          threshold: -0.08
         test_threshold_free:
-          auroc: null
-          auprc: null
-          loss: null
+          auroc: 0.0003
+          auprc: 0.0077
+          loss: -0.043
         test_authors:
-          acc: null
-          auroc: null
-          auprc: null
-          minpse: null
-          f1: null
-          threshold: null
+          acc: 0.025958
+          auroc: 0.00027
+          auprc: 0.008215
+          minpse: -0.00661
+          f1: 0.000163
+          threshold: -0.08
         test_fixed_thr:
           threshold: 0.66
-          acc: null
-          f1: null
-          minpse: null
+          acc: 0.0043
+          f1: -0.0395
+          minpse: 0.0318
       pct:
         val:
-          best_epoch: null
-          auroc: null
-          auprc: null
-          f1: null
-          precision: null
-          recall: null
-          threshold: null
+          best_epoch: 0.708333
+          auroc: 0.00774
+          auprc: -0.002442
+          f1: -0.010291
+          precision: 0.07675
+          recall: -0.108999
+          threshold: -0.16
         test_threshold_free:
-          auroc: null
-          auprc: null
-          loss: null
+          auroc: 0.000354
+          auprc: 0.016545
+          loss: -0.122892
         test_authors:
-          acc: null
-          auroc: null
-          auprc: null
-          minpse: null
-          f1: null
-          threshold: null
+          acc: 0.030557
+          auroc: 0.000319
+          auprc: 0.017706
+          minpse: -0.013811
+          f1: 0.000343
+          threshold: -0.16
         test_fixed_thr:
-          threshold: 0.66
-          acc: null
-          f1: null
-          minpse: null
+          threshold: 0.0
+          acc: 0.004886
+          f1: -0.083545
+          minpse: 0.060342
     vs_siblings:
       sibling:
         info:
-          run: null
+          run: "Regenerated_Project_Code/results/train_val_test_log_2025-11-18_21-24-40.txt"
           SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-16_missing_aware_maskbias_off_C3.yaml"
         delta:
           val:
-            best_epoch: null
-            auroc: null
-            auprc: null
-            f1: null
-            precision: null
-            recall: null
-            threshold: null
+            best_epoch: 6
+            auroc: 0.0038
+            auprc: 0.0005
+            f1: -0.0093
+            precision: 0.0189
+            recall: -0.0504
+            threshold: 0.14
           test_threshold_free:
-            auroc: null
-            auprc: null
-            loss: null
+            auroc: 0.0008
+            auprc: 0.0096
+            loss: -0.016
           test_authors:
-            acc: null
-            auroc: null
-            auprc: null
-            minpse: null
-            f1: null
-            threshold: null
+            acc: -0.004326
+            auroc: 0.000852
+            auprc: 0.009718
+            minpse: 0.0
+            f1: 0.021525
+            threshold: 0.14
           test_fixed_thr:
             threshold: 0.66
-            acc: null
-            f1: null
-            minpse: null
+            acc: -0.0019
+            f1: 0.0101
+            minpse: -0.005
         pct:
           val:
-            best_epoch: null
-            auroc: null
-            auprc: null
-            f1: null
-            precision: null
-            recall: null
-            threshold: null
+            best_epoch: 0.171429
+            auroc: 0.00451
+            auprc: 0.000942
+            f1: -0.017919
+            precision: 0.041007
+            recall: -0.084848
+            threshold: 0.5
           test_threshold_free:
-            auroc: null
-            auprc: null
-            loss: null
+            auroc: 0.000944
+            auprc: 0.020712
+            loss: -0.049551
           test_authors:
-            acc: null
-            auroc: null
-            auprc: null
-            minpse: null
-            f1: null
-            threshold: null
+            acc: -0.004917
+            auroc: 0.001006
+            auprc: 0.021014
+            minpse: 0.0
+            f1: 0.047368
+            threshold: 0.5
           test_fixed_thr:
-            threshold: 0.66
-            acc: null
-            f1: null
-            minpse: null
+            threshold: 0.0
+            acc: -0.002144
+            f1: 0.023866
+            minpse: -0.008868
 decision: "planned_run"
 notes: >
   Goal: test whether the wider SMART masking interval (0.2-0.5) recovers the AUROC gains from C1

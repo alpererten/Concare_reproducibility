@@ -1,0 +1,212 @@
+experiment_id: "2025-11-18_missing_aware_aux_C9"
+parent_id: "2025-11-16_missing_aware_baseline_a0"
+date: "2025-11-18"
+owner: "codex_agent"
+dataset: "MIMIC-III in-hospital mortality"
+task: "in-hospital-mortality"
+change: "C9: Best-no-freeze SMART config (0.1-0.3 masks, bias off) plus mild aux invariance loss (0.01) during fine-tuning"
+belief:
+  expected_final_gain: "small_positive"
+  expected_stability_gain: "neutral"
+  expected_convergence_speed_gain: "neutral"
+config:
+  command: "python train.py --epochs 100 --batch_size 256 --lr 1e-3 --weight_decay 0 --lambda_decov 1e-4 --amp --append_masks --papers_metrics_mode --missing_aware_extension --missing_aware_pretrain_epochs 10 --missing_aware_freeze_epochs 0 --missing_aware_mask_ratio_min 0.1 --missing_aware_mask_ratio_max 0.3 --missing_aware_disable_mask_bias --missing_aware_pretrain_lr 2e-4 --missing_aware_aux_weight 0.01 --keep_prob 0.5 --lr_scheduler none --early_stop_patience 10 --early_stop_min_delta 0.001 --cache_dir data/normalized_data_cache_train --instrument_signals --instrumentation_tag 2025-11-18_missing_aware_aux_C9"
+  args:
+    epochs: 100
+    batch_size: 256
+    lr: 0.001
+    lr_scheduler: "none"
+    weight_decay: 0.0
+    lambda_decov: 0.0001
+    amp: true
+    device: "cuda"
+    save_dir: "trained_models"
+    results_dir: "results"
+    cache_dir: "data/normalized_data_cache_train"
+    timestep: 0.8
+    append_masks: true
+    diag: false
+    compile: false
+    papers_metrics_mode: true
+    num_workers: -1
+    model_variant: "concare_full"
+    missing_aware_extension: true
+    missing_aware_pretrain_epochs: 10
+    missing_aware_pretrain_lr: 0.0002
+    missing_aware_mask_ratio_min: 0.1
+    missing_aware_mask_ratio_max: 0.3
+    missing_aware_ema_decay: 0.99
+    missing_aware_freeze_epochs: 0
+    missing_aware_aux_weight: 0.01
+    keep_prob: 0.5
+    missing_aware_disable_mask_bias: true
+    missing_aware_disable_temporal_attention: false
+    cv_folds: 0
+    cv_repeats: 1
+    cv_pool_splits: "train,val"
+    cv_val_ratio: 0.1
+    cv_seed: 42
+    early_stop_patience: 10
+    early_stop_min_delta: 0.001
+    parity_mode: false
+    parity_train_dir: null
+    parity_train_listfile: null
+    parity_val_dir: null
+    parity_val_listfile: null
+    parity_test_dir: null
+    parity_test_listfile: null
+metrics:
+  mimic_iii:
+    val:
+      best_epoch: 27
+      auroc: 0.8394
+      auprc: 0.5148
+      f1: 0.5107
+      precision: 0.478
+      recall: 0.5482
+      threshold: 0.47
+    test_threshold_free:
+      auroc: 0.8449
+      auprc: 0.4589
+      loss: 0.3118
+    test_authors:
+      acc: 0.867429
+      auroc: 0.84494
+      auprc: 0.457792
+      minpse: 0.457219
+      f1: 0.471023
+      threshold: 0.47
+    test_fixed_thr:
+      threshold: 0.66
+      acc: 0.8844
+      f1: 0.4316
+      minpse: 0.5602
+    source: "Regenerated_Project_Code/results/train_val_test_log_2025-11-19_03-49-26.txt"
+instrumentation:
+  signal_check:
+    path: "Regenerated_Project_Code/instrumentation_data/2025-11-18_missing_aware_aux_C9.json"
+    status: "pending_run"
+    summary: "Monitor gradients/activations when mild aux invariance is added to the best no-freeze SMART config."
+  perturbations:
+    path: "Regenerated_Project_Code/instrumentation_data/2025-11-18_missing_aware_aux_C9.json"
+    missingness_curve: null
+    truncation_curve: null
+    notes: "Populate once instrumentation run finishes."
+effect_size:
+  mimic_iii:
+    vs_parent:
+      info:
+        run: "Regenerated_Project_Code/results/train_val_test_log_2025-11-18_23-21-34.txt"
+        SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-18_baseline_instrumented_a1.yaml"
+      delta:
+        val:
+          best_epoch: 3
+          auroc: -0.0004
+          auprc: -0.0176
+          f1: -0.0043
+          precision: 0.0324
+          recall: -0.0619
+          threshold: -0.03
+        test_threshold_free:
+          auroc: -0.0027
+          auprc: -0.0065
+          loss: -0.0381
+        test_authors:
+          acc: 0.017923
+          auroc: -0.00271
+          auprc: -0.006167
+          minpse: -0.021391
+          f1: -0.004757
+          threshold: -0.03
+        test_fixed_thr:
+          threshold: 0.66
+          acc: 0.0043
+          f1: -0.0412
+          minpse: 0.0332
+      pct:
+        val:
+          best_epoch: 0.125
+          auroc: -0.000476
+          auprc: -0.033058
+          f1: -0.00835
+          precision: 0.072711
+          recall: -0.101459
+          threshold: -0.06
+        test_threshold_free:
+          auroc: -0.003185
+          auprc: -0.013966
+          loss: -0.108888
+        test_authors:
+          acc: 0.021098
+          auroc: -0.003197
+          auprc: -0.013292
+          minpse: -0.044694
+          f1: -0.009998
+          threshold: -0.06
+        test_fixed_thr:
+          threshold: 0.0
+          acc: 0.004886
+          f1: -0.08714
+          minpse: 0.062998
+    vs_siblings:
+      sibling:
+        info:
+          run: "Regenerated_Project_Code/results/train_val_test_log_2025-11-19_02-47-28.txt"
+          SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-18_missing_aware_nofreeze_C6.yaml"
+        delta:
+          val:
+            best_epoch: -8
+            auroc: -0.0043
+            auprc: -0.0162
+            f1: -0.0028
+            precision: 0.0359
+            recall: -0.0642
+            threshold: 0.17
+          test_threshold_free:
+            auroc: 0.002
+            auprc: 0.0059
+            loss: -0.0094
+          test_authors:
+            acc: -0.010816
+            auroc: 0.002026
+            auprc: 0.00593
+            minpse: -0.013369
+            f1: 0.004898
+            threshold: 0.17
+          test_fixed_thr:
+            threshold: 0.66
+            acc: -0.0028
+            f1: 0.0046
+            minpse: 0.0006
+        pct:
+          val:
+            best_epoch: -0.228571
+            auroc: -0.005097
+            auprc: -0.030508
+            f1: -0.005453
+            precision: 0.081203
+            recall: -0.104833
+            threshold: 0.566667
+          test_threshold_free:
+            auroc: 0.002373
+            auprc: 0.013024
+            loss: -0.029265
+          test_authors:
+            acc: -0.012315
+            auroc: 0.002404
+            auprc: 0.013123
+            minpse: -0.028409
+            f1: 0.010508
+            threshold: 0.566667
+          test_fixed_thr:
+            threshold: 0.0
+            acc: -0.003156
+            f1: 0.010773
+            minpse: 0.001072
+decision: "planned_run"
+notes: >
+  Builds directly on the planned no-freeze SMART run (C6) by adding a small auxiliary latent loss
+  during supervised training. Hypothesis: pretraining with 0.1-0.3 masks + mask bias off needs a
+  gentle invariance term (aux weight 0.01) to maintain robustness without hurting AUROC/AUPRC. Early
+  stopping with patience 10/delta 0.001 is left on, and instrumentation capture lets us compare
+  encoder dynamics against C6 and C3.

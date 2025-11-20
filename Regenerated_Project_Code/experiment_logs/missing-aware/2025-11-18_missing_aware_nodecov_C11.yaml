@@ -1,0 +1,211 @@
+experiment_id: "2025-11-18_missing_aware_nodecov_C11"
+parent_id: "2025-11-16_missing_aware_baseline_a0"
+date: "2025-11-18"
+owner: "codex_agent"
+dataset: "MIMIC-III in-hospital mortality"
+task: "in-hospital-mortality"
+change: "C11: Best no-freeze SMART config but disable DeCov (lambda_decov=0)"
+belief:
+  expected_final_gain: "small_positive"
+  expected_stability_gain: "neutral"
+  expected_convergence_speed_gain: "neutral"
+config:
+  command: "python train.py --epochs 100 --batch_size 256 --lr 1e-3 --weight_decay 0 --lambda_decov 0.0 --amp --append_masks --papers_metrics_mode --missing_aware_extension --missing_aware_pretrain_epochs 10 --missing_aware_freeze_epochs 0 --missing_aware_mask_ratio_min 0.1 --missing_aware_mask_ratio_max 0.3 --missing_aware_disable_mask_bias --missing_aware_pretrain_lr 2e-4 --missing_aware_aux_weight 0.0 --keep_prob 0.5 --lr_scheduler none --early_stop_patience 10 --early_stop_min_delta 0.001 --cache_dir data/normalized_data_cache_train --instrument_signals --instrumentation_tag 2025-11-18_missing_aware_nodecov_C11"
+  args:
+    epochs: 100
+    batch_size: 256
+    lr: 0.001
+    lr_scheduler: "none"
+    weight_decay: 0.0
+    lambda_decov: 0.0
+    amp: true
+    device: "cuda"
+    save_dir: "trained_models"
+    results_dir: "results"
+    cache_dir: "data/normalized_data_cache_train"
+    timestep: 0.8
+    append_masks: true
+    diag: false
+    compile: false
+    papers_metrics_mode: true
+    num_workers: -1
+    model_variant: "concare_full"
+    missing_aware_extension: true
+    missing_aware_pretrain_epochs: 10
+    missing_aware_pretrain_lr: 0.0002
+    missing_aware_mask_ratio_min: 0.1
+    missing_aware_mask_ratio_max: 0.3
+    missing_aware_ema_decay: 0.99
+    missing_aware_freeze_epochs: 0
+    missing_aware_aux_weight: 0.0
+    keep_prob: 0.5
+    missing_aware_disable_mask_bias: true
+    missing_aware_disable_temporal_attention: false
+    cv_folds: 0
+    cv_repeats: 1
+    cv_pool_splits: "train,val"
+    cv_val_ratio: 0.1
+    cv_seed: 42
+    early_stop_patience: 10
+    early_stop_min_delta: 0.001
+    parity_mode: false
+    parity_train_dir: null
+    parity_train_listfile: null
+    parity_val_dir: null
+    parity_val_listfile: null
+    parity_test_dir: null
+    parity_test_listfile: null
+metrics:
+  mimic_iii:
+    val:
+      best_epoch: null
+      auroc: null
+      auprc: null
+      f1: null
+      precision: null
+      recall: null
+      threshold: null
+    test_threshold_free:
+      auroc: null
+      auprc: null
+      loss: null
+    test_authors:
+      acc: null
+      auroc: null
+      auprc: null
+      minpse: null
+      f1: null
+      threshold: null
+    test_fixed_thr:
+      threshold: 0.66
+      acc: null
+      f1: null
+      minpse: null
+    source: "Regenerated_Project_Code/results/train_val_test_log_2025-11-19_04-16-25.txt"
+instrumentation:
+  signal_check:
+    path: "Regenerated_Project_Code/instrumentation_data/2025-11-18_missing_aware_nodecov_C11.json"
+    status: "pending_run"
+    summary: "Track whether removing DeCov in the SMART setting helps AUROC/AUPRC."
+  perturbations:
+    path: "Regenerated_Project_Code/instrumentation_data/2025-11-18_missing_aware_nodecov_C11.json"
+    missingness_curve: null
+    truncation_curve: null
+    notes: "Populate after instrumentation run completes."
+effect_size:
+  mimic_iii:
+    vs_parent:
+      info:
+        run: null
+        SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-18_baseline_instrumented_a1.yaml"
+      delta:
+        val:
+          best_epoch: null
+          auroc: null
+          auprc: null
+          f1: null
+          precision: null
+          recall: null
+          threshold: null
+        test_threshold_free:
+          auroc: null
+          auprc: null
+          loss: null
+        test_authors:
+          acc: null
+          auroc: null
+          auprc: null
+          minpse: null
+          f1: null
+          threshold: null
+        test_fixed_thr:
+          threshold: 0.66
+          acc: null
+          f1: null
+          minpse: null
+      pct:
+        val:
+          best_epoch: null
+          auroc: null
+          auprc: null
+          f1: null
+          precision: null
+          recall: null
+          threshold: null
+        test_threshold_free:
+          auroc: null
+          auprc: null
+          loss: null
+        test_authors:
+          acc: null
+          auroc: null
+          auprc: null
+          minpse: null
+          f1: null
+          threshold: null
+        test_fixed_thr:
+          threshold: 0.66
+          acc: null
+          f1: null
+          minpse: null
+    vs_siblings:
+      sibling:
+        info:
+          run: null
+          SEL: "Regenerated_Project_Code/experiment_logs/missing-aware/2025-11-18_missing_aware_nofreeze_C6.yaml"
+        delta:
+          val:
+            best_epoch: null
+            auroc: null
+            auprc: null
+            f1: null
+            precision: null
+            recall: null
+            threshold: null
+          test_threshold_free:
+            auroc: null
+            auprc: null
+            loss: null
+          test_authors:
+            acc: null
+            auroc: null
+            auprc: null
+            minpse: null
+            f1: null
+            threshold: null
+          test_fixed_thr:
+            threshold: 0.66
+            acc: null
+            f1: null
+            minpse: null
+        pct:
+          val:
+            best_epoch: null
+            auroc: null
+            auprc: null
+            f1: null
+            precision: null
+            recall: null
+            threshold: null
+          test_threshold_free:
+            auroc: null
+            auprc: null
+            loss: null
+          test_authors:
+            acc: null
+            auroc: null
+            auprc: null
+            minpse: null
+            f1: null
+            threshold: null
+          test_fixed_thr:
+            threshold: 0.66
+            acc: null
+            f1: null
+            minpse: null
+decision: "planned_run"
+notes: >
+  Checks whether DeCov regularization still helps once SMART pretraining + masking is in place.
+  Mirrors the no-freeze SMART config (C6) but sets lambda_decov=0 to isolate the interaction. If
+  AUROC/AUPRC improve without DeCov, we may back off that penalty for all SMART variants. Metrics and
+  effect sizes to be filled in after the run.
